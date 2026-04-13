@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\framework\Axbus.Core\Axbus.Core.csproj" />
+    <ProjectReference Include="..\..\framework\Axbus.Application\Axbus.Application.csproj" />
+    <ProjectReference Include="..\..\framework\Axbus.Infrastructure\Axbus.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\plugins\Axbus.Plugin.Reader.Json\Axbus.Plugin.Reader.Json.csproj" />
+    <ProjectReference Include="..\..\plugins\Axbus.Plugin.Writer.Csv\Axbus.Plugin.Writer.Csv.csproj" />
+    <ProjectReference Include="..\..\plugins\Axbus.Plugin.Writer.Excel\Axbus.Plugin.Writer.Excel.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="8.0.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

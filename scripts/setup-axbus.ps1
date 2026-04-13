@@ -1,33 +1,15 @@
 # ==============================================================================
 # setup-axbus.ps1
-# Axbus Framework — Full Solution Setup Script
+# Axbus Framework - Full Solution Setup Script
 # Copyright (c) 2026 Axel Johnson International. All rights reserved.
 #
-# PURPOSE:
-#   Automates the complete setup of the Axbus framework solution from scratch.
-#   Creates all projects, folders, references, NuGet packages and config files.
-#
 # USAGE:
-#   .\scripts\setup-axbus.ps1
+#   PowerShell -ExecutionPolicy Bypass -File .\scripts\setup-axbus.ps1
 #
 # PREREQUISITES:
 #   - .NET 8 SDK installed
 #   - Git installed
 #   - Run from the root of the cloned JsonToXFramework repository
-#
-# WHAT THIS SCRIPT DOES:
-#   1.  Validates prerequisites
-#   2.  Creates the Axbus.sln solution file
-#   3.  Creates all 16 projects with correct templates
-#   4.  Creates all folder structures (50+ folders)
-#   5.  Sets all project references
-#   6.  Installs all NuGet packages
-#   7.  Creates Directory.Build.props and Directory.Build.targets
-#   8.  Creates GlobalUsings.cs per project
-#   9.  Creates appsettings.json stubs for client projects
-#   10. Creates manifest.json stubs for plugin projects
-#   11. Builds the solution to verify zero errors
-#   12. Prints success summary with next steps
 # ==============================================================================
 
 Set-StrictMode -Version Latest
@@ -37,19 +19,14 @@ $ErrorActionPreference = "Stop"
 # CONFIGURATION
 # ==============================================================================
 
-$SolutionName     = "Axbus"
-$CompanyName      = "Axel Johnson International"
-$CopyrightYear    = "2026"
-$DotNetVersion    = "net8.0"
-$ScriptVersion    = "1.0.0"
+$SolutionName  = "Axbus"
+$CompanyName   = "Axel Johnson International"
+$CopyrightYear = "2026"
+$DotNetVersion = "net8.0"
+$ScriptVersion = "1.0.2"
 
-# Colour scheme for output
-$ColourBanner     = "Cyan"
-$ColourStep       = "Yellow"
-$ColourSuccess    = "Green"
-$ColourError      = "Red"
-$ColourWarning    = "Magenta"
-$ColourInfo       = "White"
+# Resolved at runtime after solution is created - see Get-SolutionFile function
+$SolutionFile  = ""
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -57,40 +34,55 @@ $ColourInfo       = "White"
 
 function Write-Banner {
     Write-Host ""
-    Write-Host "===============================================================================" -ForegroundColor $ColourBanner
-    Write-Host "  Axbus Framework — Solution Setup Script v$ScriptVersion" -ForegroundColor $ColourBanner
-    Write-Host "  Copyright (c) $CopyrightYear $CompanyName. All rights reserved." -ForegroundColor $ColourBanner
-    Write-Host "===============================================================================" -ForegroundColor $ColourBanner
+    Write-Host "===============================================================================" -ForegroundColor Cyan
+    Write-Host "  Axbus Framework - Solution Setup Script v$ScriptVersion" -ForegroundColor Cyan
+    Write-Host "  Copyright (c) $CopyrightYear $CompanyName. All rights reserved." -ForegroundColor Cyan
+    Write-Host "===============================================================================" -ForegroundColor Cyan
     Write-Host ""
 }
 
 function Write-Step {
     param([int]$Number, [string]$Message)
     Write-Host ""
-    Write-Host "  [$Number] $Message" -ForegroundColor $ColourStep
-    Write-Host "  $("-" * 70)" -ForegroundColor $ColourStep
+    Write-Host "  [$Number] $Message" -ForegroundColor Yellow
+    Write-Host "  $("-" * 70)" -ForegroundColor Yellow
 }
 
-function Write-Success {
+function Write-Ok {
     param([string]$Message)
-    Write-Host "      ✅ $Message" -ForegroundColor $ColourSuccess
+    Write-Host "      [OK] $Message" -ForegroundColor Green
 }
 
 function Write-Info {
     param([string]$Message)
-    Write-Host "      ℹ  $Message" -ForegroundColor $ColourInfo
+    Write-Host "      [..] $Message" -ForegroundColor White
 }
 
-function Write-Warning {
+function Write-Warn {
     param([string]$Message)
-    Write-Host "      ⚠  $Message" -ForegroundColor $ColourWarning
+    Write-Host "      [!!] $Message" -ForegroundColor Magenta
 }
 
-function Write-Failure {
+function Write-Fail {
     param([string]$Message)
     Write-Host ""
-    Write-Host "  ❌ FAILED: $Message" -ForegroundColor $ColourError
+    Write-Host "  [FAILED] $Message" -ForegroundColor Red
     Write-Host ""
+}
+
+function Get-SolutionFile {
+    # Visual Studio 2022 17.x+ creates .slnx (new XML-based format)
+    # Visual Studio 2019 and earlier creates .sln (legacy format)
+    # Auto-detect whichever format was created by dotnet new sln
+    if (Test-Path "$SolutionName.slnx") {
+        return "$SolutionName.slnx"
+    }
+    elseif (Test-Path "$SolutionName.sln") {
+        return "$SolutionName.sln"
+    }
+    else {
+        return $null
+    }
 }
 
 function Invoke-SafeCommand {
@@ -100,211 +92,256 @@ function Invoke-SafeCommand {
     )
     Write-Info $Description
     try {
-        Invoke-Expression $Command | Out-Null
-        Write-Success $Description
+        Invoke-Expression $Command 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+            throw "Command exited with code $LASTEXITCODE"
+        }
+        Write-Ok $Description
     }
     catch {
-        Write-Failure "Command failed: $Description"
-        Write-Host "  Command : $Command" -ForegroundColor $ColourError
-        Write-Host "  Error   : $_" -ForegroundColor $ColourError
+        Write-Fail "Command failed: $Description"
+        Write-Host "  Command : $Command" -ForegroundColor Red
+        Write-Host "  Error   : $_" -ForegroundColor Red
         exit 1
     }
 }
 
+function Invoke-DotnetNew {
+    # Wrapper around dotnet new that skips gracefully if project already exists.
+    # This makes the script idempotent - safe to re-run on existing projects.
+    param(
+        [string]$Command,
+        [string]$Description,
+        [string]$CsprojPath
+    )
+    if (Test-Path $CsprojPath) {
+        Write-Host "      [SKIP] Already exists: $Description" -ForegroundColor DarkGray
+        return
+    }
+    Invoke-SafeCommand $Command $Description
+}
+
+function Invoke-SolutionAdd {
+    # Wrapper around dotnet sln add that skips if project already in solution.
+    param(
+        [string]$SolutionFileParam,
+        [string]$ProjectPath
+    )
+    $projectName = Split-Path $ProjectPath -Leaf
+    # Check if already in solution by attempting add - dotnet sln add is idempotent
+    # but we still want clean output
+    $output = Invoke-Expression "dotnet sln $SolutionFileParam add $ProjectPath" 2>&1
+    if ($output -match "already contains") {
+        Write-Host "      [SKIP] Already in solution: $projectName" -ForegroundColor DarkGray
+    }
+    else {
+        Write-Ok "Added to solution: $projectName"
+    }
+}
+
 function New-ProjectFolder {
-    param([string]$ProjectPath, [string[]]$Folders)
+    param(
+        [string]$ProjectPath,
+        [string[]]$Folders
+    )
     foreach ($folder in $Folders) {
         $fullPath = Join-Path $ProjectPath $folder
         if (-not (Test-Path $fullPath)) {
             New-Item -ItemType Directory -Path $fullPath -Force | Out-Null
-            Write-Info "Created folder: $folder"
+            Write-Info "Created: $folder"
         }
     }
 }
 
 function New-FileFromContent {
-    param([string]$FilePath, [string]$Content)
+    param(
+        [string]$FilePath,
+        [string]$Content
+    )
+    # Split-Path -Parent returns empty string when FilePath has no folder component
+    # e.g. "Directory.Build.props" -> "" which causes New-Item to fail
+    # Guard against empty parent (means current directory - no need to create)
     $directory = Split-Path $FilePath -Parent
-    if (-not (Test-Path $directory)) {
+    if ((-not [string]::IsNullOrWhiteSpace($directory)) -and (-not (Test-Path $directory))) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
-    Set-Content -Path $FilePath -Value $Content -Encoding UTF8
-    Write-Success "Created: $(Split-Path $FilePath -Leaf)"
-}
-
-function Get-CopyrightHeader {
-    param([string]$FileName)
-    return @"
-// <copyright file="$FileName" company="$CompanyName">
-// Copyright (c) $CopyrightYear $CompanyName. All rights reserved.
-// </copyright>
-"@
+    [System.IO.File]::WriteAllText(
+        [System.IO.Path]::GetFullPath($FilePath),
+        $Content,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    Write-Ok "Created: $(Split-Path $FilePath -Leaf)"
 }
 
 # ==============================================================================
-# STEP 1 — VALIDATE PREREQUISITES
+# STEP 0 - CLEAN WORKSPACE
+# ==============================================================================
+
+function Invoke-CleanWorkspace {
+    Write-Step 0 "Cleaning Existing Workspace"
+
+    Write-Warn "This will permanently delete all generated solution files and projects."
+    Write-Warn "Your .github/, scripts/, docs/, .gitignore, .editorconfig,"
+    Write-Warn "README.md, LICENSE and CHANGELOG.md will NOT be deleted."
+    Write-Host ""
+    $answer = Read-Host "      Are you sure you want to clean and start fresh? (y/N)"
+
+    if ($answer -ne "y" -and $answer -ne "Y") {
+        Write-Info "Clean cancelled. Exiting."
+        exit 0
+    }
+
+    Write-Host ""
+    Write-Info "Cleaning workspace..."
+
+    # Delete solution files
+    $solutionFiles = @(
+        "$SolutionName.sln",
+        "$SolutionName.slnx",
+        "$SolutionName.sln.DotSettings",
+        "$SolutionName.sln.DotSettings.user"
+    )
+    foreach ($file in $solutionFiles) {
+        if (Test-Path $file) {
+            Remove-Item $file -Force
+            Write-Ok "Deleted: $file"
+        }
+    }
+
+    # Delete generated build config files
+    # NOTE: We do NOT delete .github/, scripts/, docs/, .gitignore,
+    #       .editorconfig, README.md, LICENSE, CHANGELOG.md, CONTRIBUTING.md
+    $buildFiles = @(
+        "Directory.Build.props",
+        "Directory.Build.targets"
+    )
+    foreach ($file in $buildFiles) {
+        if (Test-Path $file) {
+            Remove-Item $file -Force
+            Write-Ok "Deleted: $file"
+        }
+    }
+
+    # Delete src folder (all framework, plugin, client projects)
+    if (Test-Path "src") {
+        Remove-Item "src" -Recurse -Force
+        Write-Ok "Deleted: src/ (framework + plugin + client projects)"
+    }
+    else {
+        Write-Info "Skipped: src/ (does not exist)"
+    }
+
+    # Delete tests folder (all test projects)
+    if (Test-Path "tests") {
+        Remove-Item "tests" -Recurse -Force
+        Write-Ok "Deleted: tests/ (all test projects)"
+    }
+    else {
+        Write-Info "Skipped: tests/ (does not exist)"
+    }
+
+    # Delete NuGet package cache for this solution (optional cleanup)
+    if (Test-Path ".packages") {
+        Remove-Item ".packages" -Recurse -Force
+        Write-Ok "Deleted: .packages/"
+    }
+
+    Write-Host ""
+    Write-Ok "Workspace cleaned. Starting fresh setup..."
+    Write-Host ""
+}
+
+# ==============================================================================
+# STEP 1 - VALIDATE PREREQUISITES
 # ==============================================================================
 
 function Test-Prerequisites {
     Write-Step 1 "Validating Prerequisites"
 
-    # Check we are in the right directory
     if (-not (Test-Path ".git")) {
-        Write-Failure "This script must be run from the root of the cloned JsonToXFramework repository."
-        Write-Host "  Expected: A .git folder in the current directory." -ForegroundColor $ColourError
-        Write-Host "  Current : $(Get-Location)" -ForegroundColor $ColourError
+        Write-Fail "Run this script from the repository root (where .git folder exists)."
+        Write-Host "  Current location: $(Get-Location)" -ForegroundColor Red
         exit 1
     }
-    Write-Success "Running from repository root: $(Get-Location)"
+    Write-Ok "Repository root confirmed: $(Get-Location)"
 
-    # Check .NET 8 SDK
     try {
-        $dotnetVersion = dotnet --version 2>&1
+        $dotnetVersion = (dotnet --version 2>&1).ToString().Trim()
         if ($dotnetVersion -match "^8\.") {
-            Write-Success ".NET SDK found: $dotnetVersion"
+            Write-Ok ".NET SDK: $dotnetVersion"
         }
         else {
-            Write-Warning ".NET $dotnetVersion found. Axbus targets .NET 8. Consider installing .NET 8 SDK."
-            Write-Info "Download from: https://dotnet.microsoft.com/download/dotnet/8.0"
+            Write-Warn ".NET $dotnetVersion found - Axbus targets .NET 8"
         }
     }
     catch {
-        Write-Failure ".NET SDK not found. Please install .NET 8 SDK."
-        Write-Info "Download from: https://dotnet.microsoft.com/download/dotnet/8.0"
+        Write-Fail ".NET SDK not found. Install from: https://dotnet.microsoft.com/download/dotnet/8.0"
         exit 1
     }
 
-    # Check Git
     try {
-        $gitVersion = git --version 2>&1
-        Write-Success "Git found: $gitVersion"
+        $gitVersion = (git --version 2>&1).ToString().Trim()
+        Write-Ok "Git: $gitVersion"
     }
     catch {
-        Write-Failure "Git not found. Please install Git."
+        Write-Fail "Git not found. Please install Git."
         exit 1
     }
 
-    # Check if solution already exists
-    if (Test-Path "$SolutionName.sln") {
-        Write-Warning "Solution file $SolutionName.sln already exists."
-        $response = Read-Host "      Do you want to continue and overwrite? (y/N)"
-        if ($response -ne "y" -and $response -ne "Y") {
-            Write-Info "Setup cancelled by user."
-            exit 0
-        }
-    }
-
-    Write-Success "All prerequisites validated"
+    Write-Ok "All prerequisites validated"
 }
 
 # ==============================================================================
-# STEP 2 — CREATE SOLUTION FILE
+# STEP 2 - CREATE SOLUTION
 # ==============================================================================
 
 function New-SolutionFile {
     Write-Step 2 "Creating Solution File"
-
-    Invoke-SafeCommand `
-        "dotnet new sln --name $SolutionName --output ." `
-        "Creating $SolutionName.sln"
+    Invoke-SafeCommand "dotnet new sln --name $SolutionName --output ." "Creating solution file"
+    $script:SolutionFile = Get-SolutionFile
+    Write-Ok "Solution file detected: $script:SolutionFile"
 }
 
 # ==============================================================================
-# STEP 3 — CREATE ALL PROJECTS
+# STEP 3 - CREATE PROJECTS
 # ==============================================================================
 
 function New-AllProjects {
     Write-Step 3 "Creating All 16 Projects"
 
-    # ── Framework Projects ────────────────────────────────────────────────────
+    Write-Info "--- Framework Projects ---"
+    Invoke-DotnetNew "dotnet new classlib --name Axbus.Core --output src/framework/Axbus.Core --framework $DotNetVersion" "Axbus.Core" "src/framework/Axbus.Core/Axbus.Core.csproj"
+    Invoke-DotnetNew "dotnet new classlib --name Axbus.Application --output src/framework/Axbus.Application --framework $DotNetVersion" "Axbus.Application" "src/framework/Axbus.Application/Axbus.Application.csproj"
+    Invoke-DotnetNew "dotnet new classlib --name Axbus.Infrastructure --output src/framework/Axbus.Infrastructure --framework $DotNetVersion" "Axbus.Infrastructure" "src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj"
 
-    Write-Info "Creating Framework Projects..."
+    Write-Info "--- Plugin Projects ---"
+    Invoke-DotnetNew "dotnet new classlib --name Axbus.Plugin.Reader.Json --output src/plugins/Axbus.Plugin.Reader.Json --framework $DotNetVersion" "Axbus.Plugin.Reader.Json" "src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj"
+    Invoke-DotnetNew "dotnet new classlib --name Axbus.Plugin.Writer.Csv --output src/plugins/Axbus.Plugin.Writer.Csv --framework $DotNetVersion" "Axbus.Plugin.Writer.Csv" "src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj"
+    Invoke-DotnetNew "dotnet new classlib --name Axbus.Plugin.Writer.Excel --output src/plugins/Axbus.Plugin.Writer.Excel --framework $DotNetVersion" "Axbus.Plugin.Writer.Excel" "src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj"
 
-    Invoke-SafeCommand `
-        "dotnet new classlib --name Axbus.Core --output src/framework/Axbus.Core --framework $DotNetVersion" `
-        "Axbus.Core (Class Library)"
+    Write-Info "--- Client Projects ---"
+    Invoke-DotnetNew "dotnet new console --name Axbus.ConsoleApp --output src/clients/Axbus.ConsoleApp --framework $DotNetVersion" "Axbus.ConsoleApp" "src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj"
+    Invoke-DotnetNew "dotnet new winforms --name Axbus.WinFormsApp --output src/clients/Axbus.WinFormsApp --framework $DotNetVersion" "Axbus.WinFormsApp" "src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj"
 
-    Invoke-SafeCommand `
-        "dotnet new classlib --name Axbus.Application --output src/framework/Axbus.Application --framework $DotNetVersion" `
-        "Axbus.Application (Class Library)"
+    Write-Info "--- Test Projects ---"
+    Invoke-DotnetNew "dotnet new classlib --name Axbus.Tests.Common --output tests/Axbus.Tests.Common --framework $DotNetVersion" "Axbus.Tests.Common" "tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj"
+    Invoke-DotnetNew "dotnet new nunit --name Axbus.Core.Tests --output tests/Axbus.Core.Tests --framework $DotNetVersion" "Axbus.Core.Tests" "tests/Axbus.Core.Tests/Axbus.Core.Tests.csproj"
+    Invoke-DotnetNew "dotnet new nunit --name Axbus.Application.Tests --output tests/Axbus.Application.Tests --framework $DotNetVersion" "Axbus.Application.Tests" "tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj"
+    Invoke-DotnetNew "dotnet new nunit --name Axbus.Infrastructure.Tests --output tests/Axbus.Infrastructure.Tests --framework $DotNetVersion" "Axbus.Infrastructure.Tests" "tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj"
+    Invoke-DotnetNew "dotnet new nunit --name Axbus.Plugin.Reader.Json.Tests --output tests/Axbus.Plugin.Reader.Json.Tests --framework $DotNetVersion" "Axbus.Plugin.Reader.Json.Tests" "tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj"
+    Invoke-DotnetNew "dotnet new nunit --name Axbus.Plugin.Writer.Csv.Tests --output tests/Axbus.Plugin.Writer.Csv.Tests --framework $DotNetVersion" "Axbus.Plugin.Writer.Csv.Tests" "tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj"
+    Invoke-DotnetNew "dotnet new nunit --name Axbus.Plugin.Writer.Excel.Tests --output tests/Axbus.Plugin.Writer.Excel.Tests --framework $DotNetVersion" "Axbus.Plugin.Writer.Excel.Tests" "tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj"
+    Invoke-DotnetNew "dotnet new nunit --name Axbus.Integration.Tests --output tests/Axbus.Integration.Tests --framework $DotNetVersion" "Axbus.Integration.Tests" "tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj"
 
-    Invoke-SafeCommand `
-        "dotnet new classlib --name Axbus.Infrastructure --output src/framework/Axbus.Infrastructure --framework $DotNetVersion" `
-        "Axbus.Infrastructure (Class Library)"
-
-    # ── Plugin Projects ───────────────────────────────────────────────────────
-
-    Write-Info "Creating Plugin Projects..."
-
-    Invoke-SafeCommand `
-        "dotnet new classlib --name Axbus.Plugin.Reader.Json --output src/plugins/Axbus.Plugin.Reader.Json --framework $DotNetVersion" `
-        "Axbus.Plugin.Reader.Json (Class Library)"
-
-    Invoke-SafeCommand `
-        "dotnet new classlib --name Axbus.Plugin.Writer.Csv --output src/plugins/Axbus.Plugin.Writer.Csv --framework $DotNetVersion" `
-        "Axbus.Plugin.Writer.Csv (Class Library)"
-
-    Invoke-SafeCommand `
-        "dotnet new classlib --name Axbus.Plugin.Writer.Excel --output src/plugins/Axbus.Plugin.Writer.Excel --framework $DotNetVersion" `
-        "Axbus.Plugin.Writer.Excel (Class Library)"
-
-    # ── Client Projects ───────────────────────────────────────────────────────
-
-    Write-Info "Creating Client Projects..."
-
-    Invoke-SafeCommand `
-        "dotnet new console --name Axbus.ConsoleApp --output src/clients/Axbus.ConsoleApp --framework $DotNetVersion" `
-        "Axbus.ConsoleApp (Console App)"
-
-    Invoke-SafeCommand `
-        "dotnet new winforms --name Axbus.WinFormsApp --output src/clients/Axbus.WinFormsApp --framework $DotNetVersion" `
-        "Axbus.WinFormsApp (WinForms App)"
-
-    # ── Test Projects ─────────────────────────────────────────────────────────
-
-    Write-Info "Creating Test Projects..."
-
-    Invoke-SafeCommand `
-        "dotnet new classlib --name Axbus.Tests.Common --output tests/Axbus.Tests.Common --framework $DotNetVersion" `
-        "Axbus.Tests.Common (Class Library — shared test utilities)"
-
-    Invoke-SafeCommand `
-        "dotnet new nunit --name Axbus.Core.Tests --output tests/Axbus.Core.Tests --framework $DotNetVersion" `
-        "Axbus.Core.Tests (NUnit)"
-
-    Invoke-SafeCommand `
-        "dotnet new nunit --name Axbus.Application.Tests --output tests/Axbus.Application.Tests --framework $DotNetVersion" `
-        "Axbus.Application.Tests (NUnit)"
-
-    Invoke-SafeCommand `
-        "dotnet new nunit --name Axbus.Infrastructure.Tests --output tests/Axbus.Infrastructure.Tests --framework $DotNetVersion" `
-        "Axbus.Infrastructure.Tests (NUnit)"
-
-    Invoke-SafeCommand `
-        "dotnet new nunit --name Axbus.Plugin.Reader.Json.Tests --output tests/Axbus.Plugin.Reader.Json.Tests --framework $DotNetVersion" `
-        "Axbus.Plugin.Reader.Json.Tests (NUnit)"
-
-    Invoke-SafeCommand `
-        "dotnet new nunit --name Axbus.Plugin.Writer.Csv.Tests --output tests/Axbus.Plugin.Writer.Csv.Tests --framework $DotNetVersion" `
-        "Axbus.Plugin.Writer.Csv.Tests (NUnit)"
-
-    Invoke-SafeCommand `
-        "dotnet new nunit --name Axbus.Plugin.Writer.Excel.Tests --output tests/Axbus.Plugin.Writer.Excel.Tests --framework $DotNetVersion" `
-        "Axbus.Plugin.Writer.Excel.Tests (NUnit)"
-
-    Invoke-SafeCommand `
-        "dotnet new nunit --name Axbus.Integration.Tests --output tests/Axbus.Integration.Tests --framework $DotNetVersion" `
-        "Axbus.Integration.Tests (NUnit)"
-
-    Write-Success "All 16 projects created"
+    Write-Ok "All 16 projects created"
 }
 
 # ==============================================================================
-# STEP 4 — ADD PROJECTS TO SOLUTION
+# STEP 4 - ADD TO SOLUTION
 # ==============================================================================
 
 function Add-ProjectsToSolution {
-    Write-Step 4 "Adding All Projects to Solution"
+    Write-Step 4 "Adding Projects to Solution"
 
     $projects = @(
         "src/framework/Axbus.Core/Axbus.Core.csproj",
@@ -326,113 +363,62 @@ function Add-ProjectsToSolution {
     )
 
     foreach ($project in $projects) {
-        Invoke-SafeCommand `
-            "dotnet sln $SolutionName.sln add $project" `
-            "Adding $project"
+        Invoke-SolutionAdd $script:SolutionFile $project
     }
 
-    Write-Success "All 16 projects added to solution"
+    Write-Ok "All 16 projects added to solution"
 }
 
 # ==============================================================================
-# STEP 5 — CREATE ALL FOLDER STRUCTURES
+# STEP 5 - CREATE FOLDER STRUCTURES
 # ==============================================================================
 
 function New-AllFolderStructures {
     Write-Step 5 "Creating Folder Structures"
 
-    # ── Axbus.Core ────────────────────────────────────────────────────────────
-    Write-Info "Axbus.Core folders..."
+    Write-Info "--- Axbus.Core ---"
     New-ProjectFolder "src/framework/Axbus.Core" @(
-        "Abstractions/Pipeline",
-        "Abstractions/Middleware",
-        "Abstractions/Connectors",
-        "Abstractions/Plugin",
-        "Abstractions/Conversion",
-        "Abstractions/Factories",
-        "Abstractions/Notifications",
-        "Enums",
-        "Exceptions",
-        "Models/Configuration",
-        "Models/Pipeline",
-        "Models/Plugin",
-        "Models/Notifications",
-        "Models/Results"
+        "Abstractions/Pipeline", "Abstractions/Middleware", "Abstractions/Connectors",
+        "Abstractions/Plugin", "Abstractions/Conversion", "Abstractions/Factories",
+        "Abstractions/Notifications", "Enums", "Exceptions",
+        "Models/Configuration", "Models/Pipeline", "Models/Plugin",
+        "Models/Notifications", "Models/Results"
     )
 
-    # ── Axbus.Application ─────────────────────────────────────────────────────
-    Write-Info "Axbus.Application folders..."
+    Write-Info "--- Axbus.Application ---"
     New-ProjectFolder "src/framework/Axbus.Application" @(
-        "Conversion",
-        "Factories",
-        "Middleware",
-        "Notifications",
-        "Pipeline",
-        "Plugin",
-        "Extensions"
+        "Conversion", "Factories", "Middleware", "Notifications",
+        "Pipeline", "Plugin", "Extensions"
     )
 
-    # ── Axbus.Infrastructure ──────────────────────────────────────────────────
-    Write-Info "Axbus.Infrastructure folders..."
+    Write-Info "--- Axbus.Infrastructure ---"
     New-ProjectFolder "src/framework/Axbus.Infrastructure" @(
-        "Connectors",
-        "FileSystem",
-        "Logging",
-        "Extensions"
+        "Connectors", "FileSystem", "Logging", "Extensions"
     )
 
-    # ── Axbus.Plugin.Reader.Json ──────────────────────────────────────────────
-    Write-Info "Axbus.Plugin.Reader.Json folders..."
+    Write-Info "--- Axbus.Plugin.Reader.Json ---"
     New-ProjectFolder "src/plugins/Axbus.Plugin.Reader.Json" @(
-        "Options",
-        "Parser",
-        "Reader",
-        "Transformer",
-        "Validators"
+        "Options", "Parser", "Reader", "Transformer", "Validators"
     )
 
-    # ── Axbus.Plugin.Writer.Csv ───────────────────────────────────────────────
-    Write-Info "Axbus.Plugin.Writer.Csv folders..."
+    Write-Info "--- Axbus.Plugin.Writer.Csv ---"
     New-ProjectFolder "src/plugins/Axbus.Plugin.Writer.Csv" @(
-        "Internal",
-        "Options",
-        "Validators",
-        "Writer"
+        "Internal", "Options", "Validators", "Writer"
     )
 
-    # ── Axbus.Plugin.Writer.Excel ─────────────────────────────────────────────
-    Write-Info "Axbus.Plugin.Writer.Excel folders..."
+    Write-Info "--- Axbus.Plugin.Writer.Excel ---"
     New-ProjectFolder "src/plugins/Axbus.Plugin.Writer.Excel" @(
-        "Internal",
-        "Options",
-        "Validators",
-        "Writer"
+        "Internal", "Options", "Validators", "Writer"
     )
 
-    # ── Axbus.ConsoleApp ──────────────────────────────────────────────────────
-    Write-Info "Axbus.ConsoleApp folders..."
-    New-ProjectFolder "src/clients/Axbus.ConsoleApp" @(
-        "Bootstrapper"
-    )
+    Write-Info "--- Client folders ---"
+    New-ProjectFolder "src/clients/Axbus.ConsoleApp" @("Bootstrapper")
+    New-ProjectFolder "src/clients/Axbus.WinFormsApp" @("Bootstrapper", "Forms", "ViewModels")
 
-    # ── Axbus.WinFormsApp ─────────────────────────────────────────────────────
-    Write-Info "Axbus.WinFormsApp folders..."
-    New-ProjectFolder "src/clients/Axbus.WinFormsApp" @(
-        "Bootstrapper",
-        "Forms",
-        "ViewModels"
-    )
+    Write-Info "--- Axbus.Tests.Common ---"
+    New-ProjectFolder "tests/Axbus.Tests.Common" @("Assertions", "Base", "Builders", "Helpers")
 
-    # ── Axbus.Tests.Common ────────────────────────────────────────────────────
-    Write-Info "Axbus.Tests.Common folders..."
-    New-ProjectFolder "tests/Axbus.Tests.Common" @(
-        "Assertions",
-        "Base",
-        "Builders",
-        "Helpers"
-    )
-
-    # ── Test Projects ─────────────────────────────────────────────────────────
+    Write-Info "--- Test project base folders ---"
     $testProjects = @(
         "tests/Axbus.Core.Tests",
         "tests/Axbus.Application.Tests",
@@ -442,333 +428,179 @@ function New-AllFolderStructures {
         "tests/Axbus.Plugin.Writer.Excel.Tests",
         "tests/Axbus.Integration.Tests"
     )
-
-    foreach ($testProject in $testProjects) {
-        Write-Info "$testProject folders..."
-        New-ProjectFolder $testProject @(
-            "Base",
-            "TestData",
-            "Tests"
-        )
+    foreach ($tp in $testProjects) {
+        New-ProjectFolder $tp @("Base", "TestData", "Tests")
     }
 
-    # Additional TestData sub-folders for specific test projects
+    Write-Info "--- Test project sub-folders ---"
     New-ProjectFolder "tests/Axbus.Core.Tests" @(
-        "TestData/FlatJson",
-        "TestData/NestedJson",
-        "TestData/ArrayJson",
-        "TestData/MixedJson",
-        "TestData/EdgeCases",
-        "Tests/Enums",
-        "Tests/Models"
+        "TestData/FlatJson", "TestData/NestedJson", "TestData/ArrayJson",
+        "TestData/MixedJson", "TestData/EdgeCases", "Tests/Enums", "Tests/Models"
     )
 
     New-ProjectFolder "tests/Axbus.Application.Tests" @(
         "TestData/SingleModule",
-        "TestData/MultiModule/module1",
-        "TestData/MultiModule/module2",
-        "TestData/ParallelExecution/parallel_set1",
-        "TestData/ParallelExecution/parallel_set2",
-        "TestData/Plugins/valid_plugin",
-        "TestData/Plugins/incompatible_plugin",
-        "TestData/Plugins/conflicting_plugins",
-        "TestData/Plugins/missing_manifest",
-        "Tests/Conversion",
-        "Tests/Factories",
-        "Tests/Middleware",
-        "Tests/Notifications",
-        "Tests/Pipeline",
-        "Tests/Plugin"
+        "TestData/MultiModule/module1", "TestData/MultiModule/module2",
+        "TestData/ParallelExecution/parallel_set1", "TestData/ParallelExecution/parallel_set2",
+        "TestData/Plugins/valid_plugin", "TestData/Plugins/incompatible_plugin",
+        "TestData/Plugins/conflicting_plugins", "TestData/Plugins/missing_manifest",
+        "Tests/Conversion", "Tests/Factories", "Tests/Middleware",
+        "Tests/Notifications", "Tests/Pipeline", "Tests/Plugin"
     )
 
     New-ProjectFolder "tests/Axbus.Infrastructure.Tests" @(
         "TestData/Connectors/source_files",
-        "TestData/PluginFolder/valid_plugins",
-        "TestData/PluginFolder/invalid_plugins",
-        "Tests/Connectors",
-        "Tests/FileSystem",
-        "Tests/Logging"
+        "TestData/PluginFolder/valid_plugins", "TestData/PluginFolder/invalid_plugins",
+        "Tests/Connectors", "Tests/FileSystem", "Tests/Logging"
     )
 
     New-ProjectFolder "tests/Axbus.Plugin.Reader.Json.Tests" @(
-        "TestData/Input",
-        "TestData/Expected",
-        "Tests/Integration",
-        "Tests/Parser",
-        "Tests/Plugin",
-        "Tests/Reader",
-        "Tests/Transformer"
+        "TestData/Input", "TestData/Expected",
+        "Tests/Integration", "Tests/Parser", "Tests/Plugin", "Tests/Reader", "Tests/Transformer"
     )
 
     New-ProjectFolder "tests/Axbus.Plugin.Writer.Csv.Tests" @(
-        "TestData/Input",
-        "TestData/Expected",
-        "Tests/Integration",
-        "Tests/Internal",
-        "Tests/Options",
-        "Tests/Plugin",
-        "Tests/Writer"
+        "TestData/Input", "TestData/Expected",
+        "Tests/Integration", "Tests/Internal", "Tests/Options", "Tests/Plugin", "Tests/Writer"
     )
 
     New-ProjectFolder "tests/Axbus.Plugin.Writer.Excel.Tests" @(
-        "TestData/Input",
-        "TestData/Expected",
-        "Tests/Integration",
-        "Tests/Internal",
-        "Tests/Options",
-        "Tests/Plugin",
-        "Tests/Writer"
+        "TestData/Input", "TestData/Expected",
+        "Tests/Integration", "Tests/Internal", "Tests/Options", "Tests/Plugin", "Tests/Writer"
     )
 
     New-ProjectFolder "tests/Axbus.Integration.Tests" @(
-        "TestData/JsonToCsv/input",
-        "TestData/JsonToCsv/expected",
-        "TestData/JsonToExcel/input",
-        "TestData/JsonToExcel/expected",
-        "TestData/JsonToCsvAndExcel/input",
-        "TestData/JsonToCsvAndExcel/expected",
-        "TestData/MultiModule/module1_input",
-        "TestData/MultiModule/module2_input",
+        "TestData/JsonToCsv/input", "TestData/JsonToCsv/expected",
+        "TestData/JsonToExcel/input", "TestData/JsonToExcel/expected",
+        "TestData/JsonToCsvAndExcel/input", "TestData/JsonToCsvAndExcel/expected",
+        "TestData/MultiModule/module1_input", "TestData/MultiModule/module2_input",
         "TestData/MultiModule/expected",
-        "TestData/ParallelExecution/set1",
-        "TestData/ParallelExecution/set2",
-        "TestData/ParallelExecution/set3",
-        "TestData/ErrorScenarios",
-        "Tests"
+        "TestData/ParallelExecution/set1", "TestData/ParallelExecution/set2",
+        "TestData/ParallelExecution/set3", "TestData/ErrorScenarios", "Tests"
     )
 
-    Write-Success "All folder structures created"
+    Write-Ok "All folder structures created"
 }
 
 # ==============================================================================
-# STEP 6 — SET PROJECT REFERENCES
+# STEP 6 - SET PROJECT REFERENCES
 # ==============================================================================
 
 function Set-AllProjectReferences {
     Write-Step 6 "Setting Project References"
 
-    # Axbus.Application → Axbus.Core
-    Write-Info "Axbus.Application references..."
-    Invoke-SafeCommand `
-        "dotnet add src/framework/Axbus.Application/Axbus.Application.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Application → Axbus.Core"
+    Write-Info "--- Framework ---"
+    Invoke-SafeCommand "dotnet add src/framework/Axbus.Application/Axbus.Application.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Application -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Infrastructure -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" "Axbus.Infrastructure -> Axbus.Application"
 
-    # Axbus.Infrastructure → Axbus.Core + Axbus.Application
-    Write-Info "Axbus.Infrastructure references..."
-    Invoke-SafeCommand `
-        "dotnet add src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Infrastructure → Axbus.Core"
+    Write-Info "--- Plugins (Core only) ---"
+    Invoke-SafeCommand "dotnet add src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Plugin.Reader.Json -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Plugin.Writer.Csv -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Plugin.Writer.Excel -> Axbus.Core"
 
-    Invoke-SafeCommand `
-        "dotnet add src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" `
-        "Axbus.Infrastructure → Axbus.Application"
+    Write-Info "--- ConsoleApp ---"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.ConsoleApp -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" "Axbus.ConsoleApp -> Axbus.Application"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj reference src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj" "Axbus.ConsoleApp -> Axbus.Infrastructure"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj reference src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj" "Axbus.ConsoleApp -> Axbus.Plugin.Reader.Json"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj reference src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj" "Axbus.ConsoleApp -> Axbus.Plugin.Writer.Csv"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj reference src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj" "Axbus.ConsoleApp -> Axbus.Plugin.Writer.Excel"
 
-    # Axbus.Plugin.Reader.Json → Axbus.Core ONLY
-    Write-Info "Axbus.Plugin.Reader.Json references..."
-    Invoke-SafeCommand `
-        "dotnet add src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Plugin.Reader.Json → Axbus.Core"
+    Write-Info "--- WinFormsApp ---"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.WinFormsApp -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" "Axbus.WinFormsApp -> Axbus.Application"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj reference src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj" "Axbus.WinFormsApp -> Axbus.Infrastructure"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj reference src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj" "Axbus.WinFormsApp -> Axbus.Plugin.Reader.Json"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj reference src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj" "Axbus.WinFormsApp -> Axbus.Plugin.Writer.Csv"
+    Invoke-SafeCommand "dotnet add src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj reference src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj" "Axbus.WinFormsApp -> Axbus.Plugin.Writer.Excel"
 
-    # Axbus.Plugin.Writer.Csv → Axbus.Core ONLY
-    Write-Info "Axbus.Plugin.Writer.Csv references..."
-    Invoke-SafeCommand `
-        "dotnet add src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Plugin.Writer.Csv → Axbus.Core"
+    Write-Info "--- Test Projects ---"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Tests.Common -> Axbus.Core"
 
-    # Axbus.Plugin.Writer.Excel → Axbus.Core ONLY
-    Write-Info "Axbus.Plugin.Writer.Excel references..."
-    Invoke-SafeCommand `
-        "dotnet add src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Plugin.Writer.Excel → Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Core.Tests/Axbus.Core.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Core.Tests -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Core.Tests/Axbus.Core.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" "Axbus.Core.Tests -> Axbus.Tests.Common"
 
-    # Axbus.ConsoleApp → All layers + All plugins
-    Write-Info "Axbus.ConsoleApp references..."
-    $consoleRefs = @(
-        "src/framework/Axbus.Core/Axbus.Core.csproj",
-        "src/framework/Axbus.Application/Axbus.Application.csproj",
-        "src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj",
-        "src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj",
-        "src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj",
-        "src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj"
-    )
-    foreach ($ref in $consoleRefs) {
-        Invoke-SafeCommand `
-            "dotnet add src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj reference $ref" `
-            "Axbus.ConsoleApp → $(Split-Path $ref -Parent | Split-Path -Leaf)"
-    }
+    Invoke-SafeCommand "dotnet add tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Application.Tests -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" "Axbus.Application.Tests -> Axbus.Application"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" "Axbus.Application.Tests -> Axbus.Tests.Common"
 
-    # Axbus.WinFormsApp → All layers + All plugins
-    Write-Info "Axbus.WinFormsApp references..."
-    $winformsRefs = @(
-        "src/framework/Axbus.Core/Axbus.Core.csproj",
-        "src/framework/Axbus.Application/Axbus.Application.csproj",
-        "src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj",
-        "src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj",
-        "src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj",
-        "src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj"
-    )
-    foreach ($ref in $winformsRefs) {
-        Invoke-SafeCommand `
-            "dotnet add src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj reference $ref" `
-            "Axbus.WinFormsApp → $(Split-Path $ref -Parent | Split-Path -Leaf)"
-    }
+    Invoke-SafeCommand "dotnet add tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Infrastructure.Tests -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" "Axbus.Infrastructure.Tests -> Axbus.Application"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj reference src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj" "Axbus.Infrastructure.Tests -> Axbus.Infrastructure"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" "Axbus.Infrastructure.Tests -> Axbus.Tests.Common"
 
-    # Axbus.Tests.Common → Axbus.Core
-    Write-Info "Axbus.Tests.Common references..."
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Tests.Common → Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Plugin.Reader.Json.Tests -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj reference src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj" "Axbus.Plugin.Reader.Json.Tests -> Axbus.Plugin.Reader.Json"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" "Axbus.Plugin.Reader.Json.Tests -> Axbus.Tests.Common"
 
-    # Axbus.Core.Tests → Axbus.Core + Axbus.Tests.Common
-    Write-Info "Axbus.Core.Tests references..."
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Core.Tests/Axbus.Core.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Core.Tests → Axbus.Core"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Core.Tests/Axbus.Core.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" `
-        "Axbus.Core.Tests → Axbus.Tests.Common"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Plugin.Writer.Csv.Tests -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj reference src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj" "Axbus.Plugin.Writer.Csv.Tests -> Axbus.Plugin.Writer.Csv"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" "Axbus.Plugin.Writer.Csv.Tests -> Axbus.Tests.Common"
 
-    # Axbus.Application.Tests → Core + Application + Tests.Common
-    Write-Info "Axbus.Application.Tests references..."
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Application.Tests → Axbus.Core"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" `
-        "Axbus.Application.Tests → Axbus.Application"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" `
-        "Axbus.Application.Tests → Axbus.Tests.Common"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Plugin.Writer.Excel.Tests -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj reference src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj" "Axbus.Plugin.Writer.Excel.Tests -> Axbus.Plugin.Writer.Excel"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" "Axbus.Plugin.Writer.Excel.Tests -> Axbus.Tests.Common"
 
-    # Axbus.Infrastructure.Tests → All framework + Tests.Common
-    Write-Info "Axbus.Infrastructure.Tests references..."
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Infrastructure.Tests → Axbus.Core"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" `
-        "Axbus.Infrastructure.Tests → Axbus.Application"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj reference src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj" `
-        "Axbus.Infrastructure.Tests → Axbus.Infrastructure"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" `
-        "Axbus.Infrastructure.Tests → Axbus.Tests.Common"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" "Axbus.Integration.Tests -> Axbus.Core"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj reference src/framework/Axbus.Application/Axbus.Application.csproj" "Axbus.Integration.Tests -> Axbus.Application"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj reference src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj" "Axbus.Integration.Tests -> Axbus.Infrastructure"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj reference src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj" "Axbus.Integration.Tests -> Axbus.Plugin.Reader.Json"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj reference src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj" "Axbus.Integration.Tests -> Axbus.Plugin.Writer.Csv"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj reference src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj" "Axbus.Integration.Tests -> Axbus.Plugin.Writer.Excel"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" "Axbus.Integration.Tests -> Axbus.Tests.Common"
 
-    # Axbus.Plugin.Reader.Json.Tests → Core + Plugin + Tests.Common
-    Write-Info "Axbus.Plugin.Reader.Json.Tests references..."
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Plugin.Reader.Json.Tests → Axbus.Core"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj reference src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj" `
-        "Axbus.Plugin.Reader.Json.Tests → Axbus.Plugin.Reader.Json"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" `
-        "Axbus.Plugin.Reader.Json.Tests → Axbus.Tests.Common"
-
-    # Axbus.Plugin.Writer.Csv.Tests → Core + Plugin + Tests.Common
-    Write-Info "Axbus.Plugin.Writer.Csv.Tests references..."
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Plugin.Writer.Csv.Tests → Axbus.Core"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj reference src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj" `
-        "Axbus.Plugin.Writer.Csv.Tests → Axbus.Plugin.Writer.Csv"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" `
-        "Axbus.Plugin.Writer.Csv.Tests → Axbus.Tests.Common"
-
-    # Axbus.Plugin.Writer.Excel.Tests → Core + Plugin + Tests.Common
-    Write-Info "Axbus.Plugin.Writer.Excel.Tests references..."
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj reference src/framework/Axbus.Core/Axbus.Core.csproj" `
-        "Axbus.Plugin.Writer.Excel.Tests → Axbus.Core"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj reference src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj" `
-        "Axbus.Plugin.Writer.Excel.Tests → Axbus.Plugin.Writer.Excel"
-    Invoke-SafeCommand `
-        "dotnet add tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj reference tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" `
-        "Axbus.Plugin.Writer.Excel.Tests → Axbus.Tests.Common"
-
-    # Axbus.Integration.Tests → All layers + All plugins + Tests.Common
-    Write-Info "Axbus.Integration.Tests references..."
-    $integrationRefs = @(
-        "src/framework/Axbus.Core/Axbus.Core.csproj",
-        "src/framework/Axbus.Application/Axbus.Application.csproj",
-        "src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj",
-        "src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj",
-        "src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj",
-        "src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj",
-        "tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj"
-    )
-    foreach ($ref in $integrationRefs) {
-        Invoke-SafeCommand `
-            "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj reference $ref" `
-            "Axbus.Integration.Tests → $(Split-Path $ref -Parent | Split-Path -Leaf)"
-    }
-
-    Write-Success "All project references set"
+    Write-Ok "All project references set"
 }
 
 # ==============================================================================
-# STEP 7 — INSTALL NUGET PACKAGES
+# STEP 7 - INSTALL NUGET PACKAGES
 # ==============================================================================
 
 function Install-AllNuGetPackages {
     Write-Step 7 "Installing NuGet Packages"
 
-    # ── Axbus.Application ─────────────────────────────────────────────────────
-    Write-Info "Installing Axbus.Application packages..."
-    $appProject = "src/framework/Axbus.Application/Axbus.Application.csproj"
-    Invoke-SafeCommand "dotnet add $appProject package System.Reactive --version 6.0.1" "System.Reactive 6.0.1"
-    Invoke-SafeCommand "dotnet add $appProject package Microsoft.Extensions.Logging.Abstractions --version 8.0.0" "Microsoft.Extensions.Logging.Abstractions 8.0.0"
-    Invoke-SafeCommand "dotnet add $appProject package Microsoft.Extensions.Options --version 8.0.0" "Microsoft.Extensions.Options 8.0.0"
-    Invoke-SafeCommand "dotnet add $appProject package Microsoft.Extensions.DependencyInjection --version 8.0.0" "Microsoft.Extensions.DependencyInjection 8.0.0"
+    Write-Info "--- Axbus.Application ---"
+    $ap = "src/framework/Axbus.Application/Axbus.Application.csproj"
+    Invoke-SafeCommand "dotnet add $ap package System.Reactive --version 6.0.1" "System.Reactive"
+    Invoke-SafeCommand "dotnet add $ap package Microsoft.Extensions.Logging.Abstractions --version 8.0.0" "Microsoft.Extensions.Logging.Abstractions"
+    Invoke-SafeCommand "dotnet add $ap package Microsoft.Extensions.Options --version 8.0.0" "Microsoft.Extensions.Options"
+    Invoke-SafeCommand "dotnet add $ap package Microsoft.Extensions.DependencyInjection --version 8.0.0" "Microsoft.Extensions.DependencyInjection"
 
-    # ── Axbus.Infrastructure ──────────────────────────────────────────────────
-    Write-Info "Installing Axbus.Infrastructure packages..."
-    $infraProject = "src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj"
-    Invoke-SafeCommand "dotnet add $infraProject package Serilog --version 4.0.0" "Serilog 4.0.0"
-    Invoke-SafeCommand "dotnet add $infraProject package Serilog.Sinks.Console --version 6.0.0" "Serilog.Sinks.Console 6.0.0"
-    Invoke-SafeCommand "dotnet add $infraProject package Serilog.Sinks.File --version 5.0.0" "Serilog.Sinks.File 5.0.0"
-    Invoke-SafeCommand "dotnet add $infraProject package Serilog.Extensions.Hosting --version 8.0.0" "Serilog.Extensions.Hosting 8.0.0"
-    Invoke-SafeCommand "dotnet add $infraProject package Serilog.Settings.Configuration --version 8.0.0" "Serilog.Settings.Configuration 8.0.0"
-    Invoke-SafeCommand "dotnet add $infraProject package Microsoft.Extensions.DependencyInjection --version 8.0.0" "Microsoft.Extensions.DependencyInjection 8.0.0"
-    Invoke-SafeCommand "dotnet add $infraProject package Microsoft.Extensions.Configuration.Json --version 8.0.0" "Microsoft.Extensions.Configuration.Json 8.0.0"
+    Write-Info "--- Axbus.Infrastructure ---"
+    $ip = "src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj"
+    Invoke-SafeCommand "dotnet add $ip package Serilog --version 4.0.0" "Serilog"
+    Invoke-SafeCommand "dotnet add $ip package Serilog.Sinks.Console --version 6.0.0" "Serilog.Sinks.Console"
+    Invoke-SafeCommand "dotnet add $ip package Serilog.Sinks.File --version 5.0.0" "Serilog.Sinks.File"
+    Invoke-SafeCommand "dotnet add $ip package Serilog.Extensions.Hosting --version 8.0.0" "Serilog.Extensions.Hosting"
+    Invoke-SafeCommand "dotnet add $ip package Serilog.Settings.Configuration --version 8.0.0" "Serilog.Settings.Configuration"
+    Invoke-SafeCommand "dotnet add $ip package Microsoft.Extensions.DependencyInjection --version 8.0.0" "Microsoft.Extensions.DependencyInjection"
+    Invoke-SafeCommand "dotnet add $ip package Microsoft.Extensions.Configuration.Json --version 8.0.0" "Microsoft.Extensions.Configuration.Json"
 
-    # ── Axbus.Plugin.Reader.Json ──────────────────────────────────────────────
-    Write-Info "Installing Axbus.Plugin.Reader.Json packages..."
-    $jsonPlugin = "src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj"
-    Invoke-SafeCommand "dotnet add $jsonPlugin package Microsoft.Extensions.Logging.Abstractions --version 8.0.0" "Microsoft.Extensions.Logging.Abstractions 8.0.0"
+    Write-Info "--- Plugins ---"
+    $rj = "src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj"
+    Invoke-SafeCommand "dotnet add $rj package Microsoft.Extensions.Logging.Abstractions --version 8.0.0" "Microsoft.Extensions.Logging.Abstractions -> Reader.Json"
 
-    # ── Axbus.Plugin.Writer.Csv ───────────────────────────────────────────────
-    Write-Info "Installing Axbus.Plugin.Writer.Csv packages..."
-    $csvPlugin = "src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj"
-    Invoke-SafeCommand "dotnet add $csvPlugin package Microsoft.Extensions.Logging.Abstractions --version 8.0.0" "Microsoft.Extensions.Logging.Abstractions 8.0.0"
+    $wc = "src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj"
+    Invoke-SafeCommand "dotnet add $wc package Microsoft.Extensions.Logging.Abstractions --version 8.0.0" "Microsoft.Extensions.Logging.Abstractions -> Writer.Csv"
 
-    # ── Axbus.Plugin.Writer.Excel ─────────────────────────────────────────────
-    Write-Info "Installing Axbus.Plugin.Writer.Excel packages..."
-    $excelPlugin = "src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj"
-    Invoke-SafeCommand "dotnet add $excelPlugin package ClosedXML --version 0.102.2" "ClosedXML 0.102.2"
-    Invoke-SafeCommand "dotnet add $excelPlugin package Microsoft.Extensions.Logging.Abstractions --version 8.0.0" "Microsoft.Extensions.Logging.Abstractions 8.0.0"
+    $we = "src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj"
+    Invoke-SafeCommand "dotnet add $we package ClosedXML --version 0.102.2" "ClosedXML"
+    Invoke-SafeCommand "dotnet add $we package Microsoft.Extensions.Logging.Abstractions --version 8.0.0" "Microsoft.Extensions.Logging.Abstractions -> Writer.Excel"
 
-    # ── Axbus.ConsoleApp ──────────────────────────────────────────────────────
-    Write-Info "Installing Axbus.ConsoleApp packages..."
-    $consoleApp = "src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj"
-    Invoke-SafeCommand "dotnet add $consoleApp package Microsoft.Extensions.Hosting --version 8.0.0" "Microsoft.Extensions.Hosting 8.0.0"
-    Invoke-SafeCommand "dotnet add $consoleApp package Serilog.Extensions.Hosting --version 8.0.0" "Serilog.Extensions.Hosting 8.0.0"
-    Invoke-SafeCommand "dotnet add $consoleApp package Microsoft.Extensions.Configuration.Json --version 8.0.0" "Microsoft.Extensions.Configuration.Json 8.0.0"
+    Write-Info "--- ConsoleApp ---"
+    $ca = "src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj"
+    Invoke-SafeCommand "dotnet add $ca package Microsoft.Extensions.Hosting --version 8.0.0" "Microsoft.Extensions.Hosting"
+    Invoke-SafeCommand "dotnet add $ca package Serilog.Extensions.Hosting --version 8.0.0" "Serilog.Extensions.Hosting"
+    Invoke-SafeCommand "dotnet add $ca package Microsoft.Extensions.Configuration.Json --version 8.0.0" "Microsoft.Extensions.Configuration.Json"
 
-    # ── Axbus.WinFormsApp ─────────────────────────────────────────────────────
-    Write-Info "Installing Axbus.WinFormsApp packages..."
-    $winFormsApp = "src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj"
-    Invoke-SafeCommand "dotnet add $winFormsApp package Microsoft.Extensions.Hosting --version 8.0.0" "Microsoft.Extensions.Hosting 8.0.0"
-    Invoke-SafeCommand "dotnet add $winFormsApp package Serilog.Extensions.Hosting --version 8.0.0" "Serilog.Extensions.Hosting 8.0.0"
-    Invoke-SafeCommand "dotnet add $winFormsApp package Microsoft.Extensions.Configuration.Json --version 8.0.0" "Microsoft.Extensions.Configuration.Json 8.0.0"
+    Write-Info "--- WinFormsApp ---"
+    $wf = "src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj"
+    Invoke-SafeCommand "dotnet add $wf package Microsoft.Extensions.Hosting --version 8.0.0" "Microsoft.Extensions.Hosting"
+    Invoke-SafeCommand "dotnet add $wf package Serilog.Extensions.Hosting --version 8.0.0" "Serilog.Extensions.Hosting"
+    Invoke-SafeCommand "dotnet add $wf package Microsoft.Extensions.Configuration.Json --version 8.0.0" "Microsoft.Extensions.Configuration.Json"
 
-    # ── All Test Projects ─────────────────────────────────────────────────────
-    Write-Info "Installing test project packages..."
+    Write-Info "--- Test Projects ---"
     $testProjects = @(
         "tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj",
         "tests/Axbus.Core.Tests/Axbus.Core.Tests.csproj",
@@ -779,96 +611,73 @@ function Install-AllNuGetPackages {
         "tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj",
         "tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj"
     )
-
-    foreach ($testProject in $testProjects) {
-        $projectName = Split-Path $testProject -Parent | Split-Path -Leaf
-        Write-Info "Installing packages for $projectName..."
-        Invoke-SafeCommand "dotnet add $testProject package NUnit --version 4.1.0" "NUnit 4.1.0"
-        Invoke-SafeCommand "dotnet add $testProject package NUnit3TestAdapter --version 4.5.0" "NUnit3TestAdapter 4.5.0"
-        Invoke-SafeCommand "dotnet add $testProject package Microsoft.NET.Test.Sdk --version 17.11.0" "Microsoft.NET.Test.Sdk 17.11.0"
-        Invoke-SafeCommand "dotnet add $testProject package Microsoft.Extensions.DependencyInjection --version 8.0.0" "Microsoft.Extensions.DependencyInjection 8.0.0"
+    foreach ($tp in $testProjects) {
+        $name = Split-Path (Split-Path $tp -Parent) -Leaf
+        Invoke-SafeCommand "dotnet add $tp package NUnit --version 4.1.0" "NUnit -> $name"
+        Invoke-SafeCommand "dotnet add $tp package NUnit3TestAdapter --version 4.5.0" "NUnit3TestAdapter -> $name"
+        Invoke-SafeCommand "dotnet add $tp package Microsoft.NET.Test.Sdk --version 17.11.0" "Microsoft.NET.Test.Sdk -> $name"
+        Invoke-SafeCommand "dotnet add $tp package Microsoft.Extensions.DependencyInjection --version 8.0.0" "Microsoft.Extensions.DependencyInjection -> $name"
     }
+    Invoke-SafeCommand "dotnet add tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj package System.Reactive --version 6.0.1" "System.Reactive -> Tests.Common"
+    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj package System.Reactive --version 6.0.1" "System.Reactive -> Integration.Tests"
 
-    # System.Reactive for Tests.Common and Integration Tests
-    Invoke-SafeCommand "dotnet add tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj package System.Reactive --version 6.0.1" "System.Reactive for Tests.Common"
-    Invoke-SafeCommand "dotnet add tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj package System.Reactive --version 6.0.1" "System.Reactive for Integration.Tests"
-
-    Write-Success "All NuGet packages installed"
+    Write-Ok "All NuGet packages installed"
 }
 
 # ==============================================================================
-# STEP 8 — CREATE GLOBAL BUILD CONFIGURATION
+# STEP 8 - GLOBAL BUILD CONFIGURATION
 # ==============================================================================
 
 function New-GlobalBuildConfiguration {
     Write-Step 8 "Creating Global Build Configuration"
 
-    # Directory.Build.props
-    $buildProps = @'
+    # NOTE: Using @" "@ here-strings to avoid ALL single/double quote escaping issues
+    $buildProps = @"
 <!-- Copyright (c) 2026 Axel Johnson International. All rights reserved. -->
 <Project>
   <PropertyGroup>
-    <!-- Target Framework -->
     <TargetFramework>net8.0</TargetFramework>
-
-    <!-- Language Version — use latest C# features -->
     <LangVersion>latest</LangVersion>
-
-    <!-- Nullable reference types enabled globally -->
     <Nullable>enable</Nullable>
-
-    <!-- Treat warnings as errors in Release -->
-    <TreatWarningsAsErrors Condition="'$(Configuration)' == 'Release'">true</TreatWarningsAsErrors>
-
-    <!-- Implicit usings enabled -->
+    <TreatWarningsAsErrors Condition=" '`$(Configuration)' == 'Release' ">true</TreatWarningsAsErrors>
     <ImplicitUsings>enable</ImplicitUsings>
-
-    <!-- NuGet Package Metadata -->
     <Authors>Axel Johnson International</Authors>
     <Company>Axel Johnson International</Company>
     <Copyright>Copyright (c) 2026 Axel Johnson International. All rights reserved.</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
-
-    <!-- Symbol packages for debugging -->
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-
-    <!-- Do not pack by default — controlled via CI -->
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
-
-    <!-- Analysis -->
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisMode>All</AnalysisMode>
   </PropertyGroup>
 </Project>
-'@
-    New-FileFromContent "Directory.Build.props" $buildProps
+"@
 
-    # Directory.Build.targets
-    $buildTargets = @'
+    $buildTargets = @"
 <!-- Copyright (c) 2026 Axel Johnson International. All rights reserved. -->
 <Project>
   <PropertyGroup>
-    <!-- Enforce consistent output paths -->
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 </Project>
-'@
+"@
+
+    New-FileFromContent "Directory.Build.props" $buildProps
     New-FileFromContent "Directory.Build.targets" $buildTargets
 
-    Write-Success "Global build configuration created"
+    Write-Ok "Global build configuration created"
 }
 
 # ==============================================================================
-# STEP 9 — CREATE GLOBAL USINGS
+# STEP 9 - GLOBAL USINGS
 # ==============================================================================
 
 function New-AllGlobalUsings {
     Write-Step 9 "Creating GlobalUsings.cs Files"
 
-    # Axbus.Core
-    $coreUsings = @"
+    New-FileFromContent "src/framework/Axbus.Core/GlobalUsings.cs" @"
 // <copyright file="GlobalUsings.cs" company="Axel Johnson International">
 // Copyright (c) 2026 Axel Johnson International. All rights reserved.
 // </copyright>
@@ -878,10 +687,8 @@ global using System.Collections.Generic;
 global using System.Threading;
 global using System.Threading.Tasks;
 "@
-    New-FileFromContent "src/framework/Axbus.Core/GlobalUsings.cs" $coreUsings
 
-    # Axbus.Application
-    $appUsings = @"
+    New-FileFromContent "src/framework/Axbus.Application/GlobalUsings.cs" @"
 // <copyright file="GlobalUsings.cs" company="Axel Johnson International">
 // Copyright (c) 2026 Axel Johnson International. All rights reserved.
 // </copyright>
@@ -893,10 +700,8 @@ global using System.Threading;
 global using System.Threading.Tasks;
 global using Microsoft.Extensions.Logging;
 "@
-    New-FileFromContent "src/framework/Axbus.Application/GlobalUsings.cs" $appUsings
 
-    # Axbus.Infrastructure
-    $infraUsings = @"
+    New-FileFromContent "src/framework/Axbus.Infrastructure/GlobalUsings.cs" @"
 // <copyright file="GlobalUsings.cs" company="Axel Johnson International">
 // Copyright (c) 2026 Axel Johnson International. All rights reserved.
 // </copyright>
@@ -908,10 +713,8 @@ global using System.Threading;
 global using System.Threading.Tasks;
 global using Microsoft.Extensions.Logging;
 "@
-    New-FileFromContent "src/framework/Axbus.Infrastructure/GlobalUsings.cs" $infraUsings
 
-    # Axbus.Plugin.Reader.Json
-    $jsonPluginUsings = @"
+    New-FileFromContent "src/plugins/Axbus.Plugin.Reader.Json/GlobalUsings.cs" @"
 // <copyright file="GlobalUsings.cs" company="Axel Johnson International">
 // Copyright (c) 2026 Axel Johnson International. All rights reserved.
 // </copyright>
@@ -923,10 +726,8 @@ global using System.Threading;
 global using System.Threading.Tasks;
 global using Microsoft.Extensions.Logging;
 "@
-    New-FileFromContent "src/plugins/Axbus.Plugin.Reader.Json/GlobalUsings.cs" $jsonPluginUsings
 
-    # Axbus.Plugin.Writer.Csv
-    $csvPluginUsings = @"
+    New-FileFromContent "src/plugins/Axbus.Plugin.Writer.Csv/GlobalUsings.cs" @"
 // <copyright file="GlobalUsings.cs" company="Axel Johnson International">
 // Copyright (c) 2026 Axel Johnson International. All rights reserved.
 // </copyright>
@@ -939,10 +740,8 @@ global using System.Threading;
 global using System.Threading.Tasks;
 global using Microsoft.Extensions.Logging;
 "@
-    New-FileFromContent "src/plugins/Axbus.Plugin.Writer.Csv/GlobalUsings.cs" $csvPluginUsings
 
-    # Axbus.Plugin.Writer.Excel
-    $excelPluginUsings = @"
+    New-FileFromContent "src/plugins/Axbus.Plugin.Writer.Excel/GlobalUsings.cs" @"
 // <copyright file="GlobalUsings.cs" company="Axel Johnson International">
 // Copyright (c) 2026 Axel Johnson International. All rights reserved.
 // </copyright>
@@ -955,13 +754,12 @@ global using System.Threading.Tasks;
 global using ClosedXML.Excel;
 global using Microsoft.Extensions.Logging;
 "@
-    New-FileFromContent "src/plugins/Axbus.Plugin.Writer.Excel/GlobalUsings.cs" $excelPluginUsings
 
-    Write-Success "GlobalUsings.cs created for all projects"
+    Write-Ok "GlobalUsings.cs created for all projects"
 }
 
 # ==============================================================================
-# STEP 10 — DELETE AUTO-GENERATED PLACEHOLDER FILES
+# STEP 10 - REMOVE PLACEHOLDER FILES
 # ==============================================================================
 
 function Remove-AutoGeneratedFiles {
@@ -987,22 +785,21 @@ function Remove-AutoGeneratedFiles {
     foreach ($file in $filesToDelete) {
         if (Test-Path $file) {
             Remove-Item $file -Force
-            Write-Success "Deleted: $file"
+            Write-Ok "Deleted: $file"
         }
     }
 
-    Write-Success "Auto-generated placeholder files removed"
+    Write-Ok "Placeholder files removed"
 }
 
 # ==============================================================================
-# STEP 11 — CREATE STUB CONFIG FILES
+# STEP 11 - STUB CONFIG FILES
 # ==============================================================================
 
 function New-StubConfigFiles {
     Write-Step 11 "Creating Stub Configuration Files"
 
-    # ── appsettings.json for ConsoleApp ───────────────────────────────────────
-    $consoleAppSettings = @'
+    $appSettings = @"
 {
   "RunInParallel": false,
   "ParallelSettings": {
@@ -1065,9 +862,7 @@ function New-StubConfigFiles {
       }
     },
     "WriteTo": [
-      {
-        "Name": "Console"
-      },
+      { "Name": "Console" },
       {
         "Name": "File",
         "Args": {
@@ -1082,12 +877,11 @@ function New-StubConfigFiles {
     "Enrich": [ "FromLogContext", "WithMachineName", "WithThreadId" ]
   }
 }
-'@
-    New-FileFromContent "src/clients/Axbus.ConsoleApp/appsettings.json" $consoleAppSettings
-    New-FileFromContent "src/clients/Axbus.WinFormsApp/appsettings.json" $consoleAppSettings
+"@
+    New-FileFromContent "src/clients/Axbus.ConsoleApp/appsettings.json" $appSettings
+    New-FileFromContent "src/clients/Axbus.WinFormsApp/appsettings.json" $appSettings
 
-    # ── appsettings.Development.json ──────────────────────────────────────────
-    $devSettings = @'
+    $devSettings = @"
 {
   "Serilog": {
     "MinimumLevel": {
@@ -1095,12 +889,11 @@ function New-StubConfigFiles {
     }
   }
 }
-'@
+"@
     New-FileFromContent "src/clients/Axbus.ConsoleApp/appsettings.Development.json" $devSettings
     New-FileFromContent "src/clients/Axbus.WinFormsApp/appsettings.Development.json" $devSettings
 
-    # ── appsettings.Production.json ───────────────────────────────────────────
-    $prodSettings = @'
+    $prodSettings = @"
 {
   "Serilog": {
     "MinimumLevel": {
@@ -1108,12 +901,11 @@ function New-StubConfigFiles {
     }
   }
 }
-'@
+"@
     New-FileFromContent "src/clients/Axbus.ConsoleApp/appsettings.Production.json" $prodSettings
     New-FileFromContent "src/clients/Axbus.WinFormsApp/appsettings.Production.json" $prodSettings
 
-    # ── Plugin manifest stubs ─────────────────────────────────────────────────
-    $jsonReaderManifest = @'
+    New-FileFromContent "src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.manifest.json" @"
 {
   "Name": "JsonReader",
   "PluginId": "axbus.plugin.reader.json",
@@ -1127,10 +919,9 @@ function New-StubConfigFiles {
   "Description": "Reads, parses and transforms JSON files into the Axbus pipeline.",
   "Dependencies": []
 }
-'@
-    New-FileFromContent "src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.manifest.json" $jsonReaderManifest
+"@
 
-    $csvWriterManifest = @'
+    New-FileFromContent "src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.manifest.json" @"
 {
   "Name": "CsvWriter",
   "PluginId": "axbus.plugin.writer.csv",
@@ -1144,10 +935,9 @@ function New-StubConfigFiles {
   "Description": "Writes Axbus pipeline output to RFC 4180 compliant CSV files.",
   "Dependencies": []
 }
-'@
-    New-FileFromContent "src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.manifest.json" $csvWriterManifest
+"@
 
-    $excelWriterManifest = @'
+    New-FileFromContent "src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.manifest.json" @"
 {
   "Name": "ExcelWriter",
   "PluginId": "axbus.plugin.writer.excel",
@@ -1161,21 +951,19 @@ function New-StubConfigFiles {
   "Description": "Writes Axbus pipeline output to Excel (.xlsx) files using ClosedXML.",
   "Dependencies": [ "ClosedXML" ]
 }
-'@
-    New-FileFromContent "src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.manifest.json" $excelWriterManifest
+"@
 
-    Write-Success "All stub configuration files created"
+    Write-Ok "All stub configuration files created"
 }
 
 # ==============================================================================
-# STEP 12 — CREATE SAMPLE TEST DATA FILES
+# STEP 12 - SAMPLE TEST DATA FILES
 # ==============================================================================
 
 function New-SampleTestDataFiles {
     Write-Step 12 "Creating Sample Test Data Files"
 
-    # Simple flat JSON
-    $simpleFlatJson = @'
+    $simpleFlatJson = @"
 [
   {
     "weight": 0,
@@ -1194,11 +982,11 @@ function New-SampleTestDataFiles {
     "brandPartNumber": "SF150.0065-470x170"
   }
 ]
-'@
+"@
     New-FileFromContent "tests/Axbus.Core.Tests/TestData/FlatJson/simple_flat.json" $simpleFlatJson
+    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/flat_array.json" $simpleFlatJson
 
-    # Nested objects JSON
-    $nestedJson = @'
+    $nestedJson = @"
 [
   {
     "id": "001",
@@ -1213,11 +1001,11 @@ function New-SampleTestDataFiles {
     "amount": 1500.00
   }
 ]
-'@
+"@
     New-FileFromContent "tests/Axbus.Core.Tests/TestData/NestedJson/nested_objects.json" $nestedJson
+    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/nested_objects.json" $nestedJson
 
-    # Array explosion JSON
-    $arrayJson = @'
+    $arrayJson = @"
 [
   {
     "orderId": "ORD-001",
@@ -1228,14 +1016,16 @@ function New-SampleTestDataFiles {
     ]
   }
 ]
-'@
+"@
     New-FileFromContent "tests/Axbus.Core.Tests/TestData/ArrayJson/array_explosion.json" $arrayJson
+    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/array_explosion.json" $arrayJson
 
-    # Edge cases
     New-FileFromContent "tests/Axbus.Core.Tests/TestData/EdgeCases/empty.json" "[]"
+    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/empty.json" "[]"
     New-FileFromContent "tests/Axbus.Core.Tests/TestData/EdgeCases/invalid.json" "{ this is not valid json }"
+    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/invalid.json" "{ this is not valid json }"
 
-    $nullValuesJson = @'
+    New-FileFromContent "tests/Axbus.Core.Tests/TestData/EdgeCases/null_values.json" @"
 [
   {
     "id": "001",
@@ -1244,11 +1034,9 @@ function New-SampleTestDataFiles {
     "active": true
   }
 ]
-'@
-    New-FileFromContent "tests/Axbus.Core.Tests/TestData/EdgeCases/null_values.json" $nullValuesJson
+"@
 
-    # Integration test data
-    $salesOrderJson = @'
+    New-FileFromContent "tests/Axbus.Integration.Tests/TestData/JsonToCsv/input/sales_orders.json" @"
 [
   {
     "orderId": "SO-2026-001",
@@ -1263,90 +1051,77 @@ function New-SampleTestDataFiles {
     },
     "lines": [
       { "lineNo": 1, "product": "Widget A", "quantity": 100, "unitPrice": 25.50 },
-      { "lineNo": 2, "product": "Widget B", "quantity": 50,  "unitPrice": 42.00 }
+      { "lineNo": 2, "product": "Widget B", "quantity": 50, "unitPrice": 42.00 }
     ],
     "totalAmount": 4650.00,
     "currency": "SEK",
     "status": "Confirmed"
   }
 ]
-'@
-    New-FileFromContent "tests/Axbus.Integration.Tests/TestData/JsonToCsv/input/sales_orders.json" $salesOrderJson
-    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/flat_array.json" $simpleFlatJson
-    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/nested_objects.json" $nestedJson
-    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/array_explosion.json" $arrayJson
-    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/empty.json" "[]"
-    New-FileFromContent "tests/Axbus.Plugin.Reader.Json.Tests/TestData/Input/invalid.json" "{ this is not valid json }"
+"@
 
-    Write-Success "Sample test data files created"
+    Write-Ok "Sample test data files created"
 }
 
 # ==============================================================================
-# STEP 13 — BUILD SOLUTION TO VERIFY
+# STEP 13 - BUILD SOLUTION
 # ==============================================================================
 
 function Invoke-SolutionBuild {
     Write-Step 13 "Building Solution (Verification)"
-
-    Write-Info "Running: dotnet build $SolutionName.sln"
+    Write-Info "Running dotnet build..."
     try {
-        $buildOutput = dotnet build "$SolutionName.sln" --configuration Debug 2>&1
-        $buildSuccess = $LASTEXITCODE -eq 0
-
-        if ($buildSuccess) {
-            Write-Success "Solution builds successfully — zero errors"
+        dotnet build "$script:SolutionFile" --configuration Debug 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Solution builds successfully"
         }
         else {
-            Write-Warning "Build completed with warnings or errors. Review output:"
-            $buildOutput | Where-Object { $_ -match "error|warning" } | ForEach-Object {
-                Write-Host "      $_" -ForegroundColor $ColourWarning
-            }
-            Write-Info "This is expected at this stage — projects are empty stubs."
-            Write-Info "Errors will resolve as Copilot generates the code files."
+            Write-Warn "Build has warnings or errors - expected for empty stubs"
+            Write-Info "Errors will resolve as Copilot generates code files"
         }
     }
     catch {
-        Write-Warning "Build check failed: $_"
-        Write-Info "This may be expected for empty projects. Proceed with code generation."
+        Write-Warn "Build check: $_"
+        Write-Info "This is expected for empty projects - proceed with code generation"
     }
 }
 
 # ==============================================================================
-# STEP 14 — PRINT SUCCESS SUMMARY
+# STEP 14 - SUCCESS SUMMARY
 # ==============================================================================
 
 function Write-SuccessSummary {
     Write-Host ""
-    Write-Host "===============================================================================" -ForegroundColor $ColourSuccess
-    Write-Host "  ✅ Axbus Framework — Setup Complete!" -ForegroundColor $ColourSuccess
-    Write-Host "===============================================================================" -ForegroundColor $ColourSuccess
+    Write-Host "===============================================================================" -ForegroundColor Green
+    Write-Host "  [DONE] Axbus Framework - Setup Complete!" -ForegroundColor Green
+    Write-Host "===============================================================================" -ForegroundColor Green
     Write-Host ""
-    Write-Host "  What was created:" -ForegroundColor $ColourInfo
-    Write-Host "    ✅ Axbus.sln solution file" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ 16 projects (3 framework + 3 plugins + 2 clients + 8 tests)" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ 50+ folder structures" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ All project references set" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ All NuGet packages installed" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ Directory.Build.props + targets" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ GlobalUsings.cs per project" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ appsettings.json stubs for clients" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ manifest.json stubs for plugins" -ForegroundColor $ColourSuccess
-    Write-Host "    ✅ Sample test data JSON files" -ForegroundColor $ColourSuccess
+    Write-Host "  What was created:" -ForegroundColor White
+    Write-Host "    [OK] $script:SolutionFile" -ForegroundColor Green
+    Write-Host "    [OK] 16 projects (3 framework, 3 plugins, 2 clients, 8 tests)" -ForegroundColor Green
+    Write-Host "    [OK] 50+ folder structures" -ForegroundColor Green
+    Write-Host "    [OK] All project references" -ForegroundColor Green
+    Write-Host "    [OK] All NuGet packages" -ForegroundColor Green
+    Write-Host "    [OK] Directory.Build.props and Directory.Build.targets" -ForegroundColor Green
+    Write-Host "    [OK] GlobalUsings.cs per project" -ForegroundColor Green
+    Write-Host "    [OK] appsettings.json stubs" -ForegroundColor Green
+    Write-Host "    [OK] Plugin manifest stubs" -ForegroundColor Green
+    Write-Host "    [OK] Sample test data JSON files" -ForegroundColor Green
     Write-Host ""
-    Write-Host "  Next Steps:" -ForegroundColor $ColourStep
-    Write-Host "    1. Open Axbus.sln in Visual Studio" -ForegroundColor $ColourInfo
-    Write-Host "    2. Open Copilot Chat (Ctrl+Alt+I)" -ForegroundColor $ColourInfo
-    Write-Host "    3. Verify Claude Opus model is selected" -ForegroundColor $ColourInfo
-    Write-Host "    4. Follow .github/copilot-instructions.md Section 9" -ForegroundColor $ColourInfo
-    Write-Host "    5. Generate files in sequence from Section 8" -ForegroundColor $ColourInfo
-    Write-Host "    6. Start with: Axbus.Core/Enums/OutputFormat.cs" -ForegroundColor $ColourInfo
+    Write-Host "  Next Steps:" -ForegroundColor Yellow
+    Write-Host "    1. Open $script:SolutionFile in Visual Studio" -ForegroundColor White
+    Write-Host "    2. Open Copilot Chat (Ctrl+Alt+I)" -ForegroundColor White
+    Write-Host "    3. Verify Claude Opus model is selected" -ForegroundColor White
+    Write-Host "    4. Follow .github/copilot-instructions.md Section 9" -ForegroundColor White
+    Write-Host "    5. Start generating from Section 8 Phase 1" -ForegroundColor White
+    Write-Host "    6. First file: Axbus.Core/Enums/OutputFormat.cs" -ForegroundColor White
     Write-Host ""
-    Write-Host "  Commit this setup to Git:" -ForegroundColor $ColourStep
-    Write-Host "    git add ." -ForegroundColor $ColourInfo
-    Write-Host "    git commit -m 'chore(setup): create solution structure via setup-axbus.ps1'" -ForegroundColor $ColourInfo
-    Write-Host "    git push" -ForegroundColor $ColourInfo
+    Write-Host "  Commit to Git:" -ForegroundColor Yellow
+    Write-Host "    git add ." -ForegroundColor White
+    Write-Host "    git commit -m 'chore(setup): create solution via setup-axbus.ps1'" -ForegroundColor White
+    Write-Host "    git push" -ForegroundColor White
     Write-Host ""
-    Write-Host "===============================================================================" -ForegroundColor $ColourSuccess
+    Write-Host "===============================================================================" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -1356,6 +1131,7 @@ function Write-SuccessSummary {
 
 try {
     Write-Banner
+    Invoke-CleanWorkspace
     Test-Prerequisites
     New-SolutionFile
     New-AllProjects
@@ -1373,15 +1149,13 @@ try {
 }
 catch {
     Write-Host ""
-    Write-Host "===============================================================================" -ForegroundColor $ColourError
-    Write-Host "  ❌ Setup Failed" -ForegroundColor $ColourError
-    Write-Host "===============================================================================" -ForegroundColor $ColourError
-    Write-Host "  Error: $_" -ForegroundColor $ColourError
-    Write-Host "  Line : $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor $ColourError
+    Write-Host "===============================================================================" -ForegroundColor Red
+    Write-Host "  [FAILED] Setup Failed" -ForegroundColor Red
+    Write-Host "===============================================================================" -ForegroundColor Red
+    Write-Host "  Error : $_" -ForegroundColor Red
+    Write-Host "  Line  : $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Red
     Write-Host ""
-    Write-Host "  Please fix the error above and run the script again." -ForegroundColor $ColourError
-    Write-Host "  The script is idempotent and safe to re-run." -ForegroundColor $ColourError
-    Write-Host "===============================================================================" -ForegroundColor $ColourError
-    Write-Host ""
+    Write-Host "  Fix the error and run again - script is safe to re-run." -ForegroundColor Red
+    Write-Host "===============================================================================" -ForegroundColor Red
     exit 1
 }

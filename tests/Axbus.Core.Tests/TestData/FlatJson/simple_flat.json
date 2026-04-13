@@ -1,0 +1,18 @@
+[
+  {
+    "weight": 0,
+    "cnCode": 0,
+    "type": "Part",
+    "persistentIdentity": "1637932",
+    "brandName": "3806",
+    "brandPartNumber": "MA-200MESH-470x170"
+  },
+  {
+    "weight": 10,
+    "cnCode": 1234,
+    "type": "Assembly",
+    "persistentIdentity": "1658846",
+    "brandName": "3806",
+    "brandPartNumber": "SF150.0065-470x170"
+  }
+]
