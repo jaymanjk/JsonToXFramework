@@ -1,0 +1,21 @@
+[
+  {
+    "orderId": "SO-2026-001",
+    "orderDate": "2026-01-15",
+    "customer": {
+      "id": "CUST-001",
+      "name": "Axel Johnson AB",
+      "contact": {
+        "email": "orders@axeljohnson.se",
+        "phone": "+46 8 123 456"
+      }
+    },
+    "lines": [
+      { "lineNo": 1, "product": "Widget A", "quantity": 100, "unitPrice": 25.50 },
+      { "lineNo": 2, "product": "Widget B", "quantity": 50, "unitPrice": 42.00 }
+    ],
+    "totalAmount": 4650.00,
+    "currency": "SEK",
+    "status": "Confirmed"
+  }
+]

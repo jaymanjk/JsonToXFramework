@@ -1,0 +1,13 @@
+{
+  "Name": "JsonReader",
+  "PluginId": "axbus.plugin.reader.json",
+  "Version": "1.0.0",
+  "FrameworkVersion": "1.0.0",
+  "SourceFormat": "json",
+  "TargetFormat": null,
+  "SupportedStages": [ "Read", "Parse", "Transform" ],
+  "IsBundled": false,
+  "Author": "Axel Johnson International",
+  "Description": "Reads, parses and transforms JSON files into the Axbus pipeline.",
+  "Dependencies": []
+}

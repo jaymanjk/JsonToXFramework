@@ -1,0 +1,13 @@
+{
+  "Name": "CsvWriter",
+  "PluginId": "axbus.plugin.writer.csv",
+  "Version": "1.0.0",
+  "FrameworkVersion": "1.0.0",
+  "SourceFormat": null,
+  "TargetFormat": "csv",
+  "SupportedStages": [ "Write" ],
+  "IsBundled": false,
+  "Author": "Axel Johnson International",
+  "Description": "Writes Axbus pipeline output to RFC 4180 compliant CSV files.",
+  "Dependencies": []
+}

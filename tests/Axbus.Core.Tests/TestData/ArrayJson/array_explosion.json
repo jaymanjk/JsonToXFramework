@@ -1,0 +1,10 @@
+[
+  {
+    "orderId": "ORD-001",
+    "customer": "Acme Corp",
+    "items": [
+      { "sku": "SKU-A", "qty": 2, "price": 50.00 },
+      { "sku": "SKU-B", "qty": 1, "price": 75.00 }
+    ]
+  }
+]

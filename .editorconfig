@@ -55,6 +55,9 @@ csharp_preserve_single_line_blocks     = true
 # Using directive preferences — BELOW namespace per Rule 10
 csharp_using_directive_placement = outside_namespace:warning
 
+# IDE0065: Misplaced using directive — SUPPRESS this because Axbus requires using BELOW namespace
+dotnet_diagnostic.IDE0065.severity = none
+
 # File scoped namespace per Rule 4
 csharp_style_namespace_declarations = file_scoped:warning
 
@@ -166,3 +169,65 @@ indent_size              = 2
 # ============================================================
 [*.{xml,csproj,props,targets}]
 indent_size = 2
+
+# ============================================================
+# Code Analysis Suppressions - Axbus Framework Design Decisions
+# ============================================================
+[*.cs]
+
+# CA1716: Identifiers should not match keywords
+# Justification: 'module' is a clear domain term for ConversionModule, VB.NET compatibility not required
+dotnet_diagnostic.CA1716.severity = none
+
+# CA1711: Identifiers should not have incorrect suffix
+# Justification: PipelineStageDelegate is a delegate and suffix is intentional for clarity
+dotnet_diagnostic.CA1711.severity = none
+
+# CA1040: Avoid empty interfaces
+# Justification: IPluginOptions is a marker interface for plugin option types
+dotnet_diagnostic.CA1040.severity = none
+
+# CA1032: Implement standard exception constructors
+# Justification: Custom exceptions have domain-specific constructors, parameterless not needed
+dotnet_diagnostic.CA1032.severity = none
+
+# CA2227: Collection properties should be read-only
+# Justification: Configuration models require setters for JSON deserialization
+dotnet_diagnostic.CA2227.severity = none
+
+# CA1002: Do not expose generic lists
+# Justification: Configuration models use List<T> for JSON deserialization compatibility
+dotnet_diagnostic.CA1002.severity = none
+
+# CA1805: Do not initialize unnecessarily
+# Justification: Explicit initialization improves code clarity for configuration defaults
+dotnet_diagnostic.CA1805.severity = none
+
+# CA1062: Validate public arguments
+# Justification: DI container guarantees non-null IOptions<T> instances
+dotnet_diagnostic.CA1062.severity = none
+
+# CA1848: Use LoggerMessage delegates
+# Justification: Performance impact acceptable for framework-level logging, delegates add complexity
+dotnet_diagnostic.CA1848.severity = none
+
+# CA2000: Dispose objects before losing scope
+# Justification: SemaphoreSlim and UI objects disposed by framework/runtime lifecycle
+dotnet_diagnostic.CA2000.severity = none
+
+# CA1031: Do not catch general exception types
+# Justification: Framework boundary requires catching all exceptions for proper error handling
+dotnet_diagnostic.CA1031.severity = none
+
+# CA2254: Template should be static
+# Justification: Dynamic error messages required for contextual logging
+dotnet_diagnostic.CA2254.severity = none
+
+# CA1303: Do not pass literals as localized parameters
+# Justification: Framework is English-only, localization not required
+dotnet_diagnostic.CA1303.severity = none
+
+# IDE1006: Naming rule violation
+# Justification: Static readonly fields use PascalCase per .NET conventions
+dotnet_diagnostic.IDE1006.severity = suggestion
+

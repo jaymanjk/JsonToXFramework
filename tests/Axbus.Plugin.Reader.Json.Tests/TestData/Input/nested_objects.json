@@ -1,0 +1,14 @@
+[
+  {
+    "id": "001",
+    "type": "Order",
+    "customer": {
+      "name": "Acme Corp",
+      "address": {
+        "city": "Stockholm",
+        "country": "Sweden"
+      }
+    },
+    "amount": 1500.00
+  }
+]

@@ -1,0 +1,27 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/clients/">
+    <Project Path="src/clients/Axbus.ConsoleApp/Axbus.ConsoleApp.csproj" />
+    <Project Path="src/clients/Axbus.WinFormsApp/Axbus.WinFormsApp.csproj" />
+  </Folder>
+  <Folder Name="/src/framework/">
+    <Project Path="src/framework/Axbus.Application/Axbus.Application.csproj" />
+    <Project Path="src/framework/Axbus.Core/Axbus.Core.csproj" />
+    <Project Path="src/framework/Axbus.Infrastructure/Axbus.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/plugins/">
+    <Project Path="src/plugins/Axbus.Plugin.Reader.Json/Axbus.Plugin.Reader.Json.csproj" />
+    <Project Path="src/plugins/Axbus.Plugin.Writer.Csv/Axbus.Plugin.Writer.Csv.csproj" />
+    <Project Path="src/plugins/Axbus.Plugin.Writer.Excel/Axbus.Plugin.Writer.Excel.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj" />
+    <Project Path="tests/Axbus.Core.Tests/Axbus.Core.Tests.csproj" />
+    <Project Path="tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj" />
+    <Project Path="tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj" />
+    <Project Path="tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj" />
+    <Project Path="tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj" />
+    <Project Path="tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj" />
+    <Project Path="tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" />
+  </Folder>
+</Solution>
