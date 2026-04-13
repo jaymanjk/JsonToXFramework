@@ -40,8 +40,8 @@ public static class ApplicationServiceExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        // Bind root settings from configuration
-        services.Configure<AxbusRootSettings>(configuration);
+        // Bind root settings from configuration (binds from root since config properties match AxbusRootSettings)
+        services.Configure<AxbusRootSettings>(options => configuration.Bind(options));
 
         // Register framework version info
         services.AddSingleton(new FrameworkInfo(new Version(1, 0, 0), "Production"));

@@ -1,5 +1,7 @@
 namespace Axbus.WinFormsApp;
 
+using System.Windows.Forms;
+
 static class Program
 {
     /// <summary>
