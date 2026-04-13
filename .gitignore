@@ -1,0 +1,136 @@
+# Copyright (c) 2026 Axel Johnson International. All rights reserved.
+
+# ============================================================
+# .NET / C# specific
+# ============================================================
+
+# Build output
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.vcxproj.filters
+*.pidb
+*.svclog
+*.scc
+
+# NuGet packages
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# MSBuild
+*.log
+*.binlog
+
+# Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.trx
+*.coverage
+*.coveragexml
+coverage*/
+TestResults/
+
+# Benchmarks
+BenchmarkDotNet.Artifacts/
+
+# ReSharper
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# Rider
+.idea/
+*.sln.iml
+
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ============================================================
+# Axbus Framework specific
+# ============================================================
+
+# Plugin output folder (runtime — not source)
+/plugins/
+
+# Local conversion output files (test runs)
+/output/
+/test-output/
+
+# Local test input files that contain sensitive data
+/test-data-local/
+
+# Serilog rolling log files
+/logs/
+*.log
+
+# Temp folders created by test runs
+/tmp/
+/temp/
+
+# ============================================================
+# OS specific
+# ============================================================
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ============================================================
+# Secrets and credentials — NEVER commit these
+# ============================================================
+*.pfx
+*.p12
+*.key
+*.pem
+appsettings.Local.json
+appsettings.*.Local.json
+secrets.json
+.env
+.env.*
