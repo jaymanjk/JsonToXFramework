@@ -26,7 +26,7 @@ public sealed class PluginManifestReader : IPluginManifestReader
     /// <summary>
     /// JSON serializer options configured for case-insensitive property matching.
     /// </summary>
-    private static readonly JsonSerializerOptions SerializerOptions = new()
+    private static readonly JsonSerializerOptions serializerOptions = new()
     {
         PropertyNameCaseInsensitive = true,
     };
@@ -64,10 +64,10 @@ public sealed class PluginManifestReader : IPluginManifestReader
 
         try
         {
-            await using var stream = File.OpenRead(manifestPath);
+            using var stream = File.OpenRead(manifestPath);
             var manifest = await JsonSerializer.DeserializeAsync<PluginManifest>(
                 stream,
-                SerializerOptions,
+                serializerOptions,
                 cancellationToken).ConfigureAwait(false);
 
             if (manifest == null)
