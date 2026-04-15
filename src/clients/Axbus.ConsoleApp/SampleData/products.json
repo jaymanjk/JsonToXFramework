@@ -1,0 +1,74 @@
+[
+  {
+    "productId": "PROD-001",
+    "name": "Wireless Mouse",
+    "category": "Electronics",
+    "price": 29.99,
+    "stock": {
+      "quantity": 150,
+      "warehouse": "WH-EAST",
+      "lastRestocked": "2024-03-01"
+    },
+    "specifications": {
+      "color": "Black",
+      "connectivity": "Bluetooth",
+      "batteryLife": "12 months"
+    },
+    "tags": ["wireless", "ergonomic", "office"],
+    "active": true
+  },
+  {
+    "productId": "PROD-002",
+    "name": "USB-C Hub",
+    "category": "Accessories",
+    "price": 45.50,
+    "stock": {
+      "quantity": 75,
+      "warehouse": "WH-WEST",
+      "lastRestocked": "2024-02-15"
+    },
+    "specifications": {
+      "ports": 7,
+      "powerDelivery": "100W",
+      "dataTransfer": "10Gbps"
+    },
+    "tags": ["usb-c", "hub", "connectivity"],
+    "active": true
+  },
+  {
+    "productId": "PROD-003",
+    "name": "Mechanical Keyboard",
+    "category": "Electronics",
+    "price": 89.99,
+    "stock": {
+      "quantity": 45,
+      "warehouse": "WH-CENTRAL",
+      "lastRestocked": "2024-03-10"
+    },
+    "specifications": {
+      "switchType": "Cherry MX Blue",
+      "backlight": "RGB",
+      "layout": "Full-size"
+    },
+    "tags": ["mechanical", "gaming", "rgb"],
+    "active": true
+  },
+  {
+    "productId": "PROD-004",
+    "name": "Laptop Stand",
+    "category": "Accessories",
+    "price": 34.99,
+    "stock": {
+      "quantity": 200,
+      "warehouse": "WH-EAST",
+      "lastRestocked": "2024-01-20"
+    },
+    "specifications": {
+      "material": "Aluminum",
+      "adjustable": true,
+      "maxWeight": "10kg"
+    },
+    "tags": ["ergonomic", "adjustable", "office"],
+    "active": false
+  }
+]

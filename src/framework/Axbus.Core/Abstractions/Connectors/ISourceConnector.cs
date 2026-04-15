@@ -19,17 +19,36 @@ public interface ISourceConnector
     /// Returns an asynchronous stream of raw byte streams from the source
     /// described by <paramref name="options"/>. Each stream corresponds to
     /// one source item (for example one file on disk).
+    /// Each stream must be disposed by the caller after use.
     /// </summary>
     /// <param name="options">The source configuration describing where to read from.</param>
     /// <param name="cancellationToken">A token to cancel the enumeration.</param>
     /// <returns>
     /// An asynchronous enumerable of raw <see cref="Stream"/> instances.
-    /// Each stream must be disposed by the caller after use.
     /// </returns>
     /// <exception cref="Axbus.Core.Exceptions.AxbusConnectorException">
     /// Thrown when the source cannot be accessed due to an I/O or permission error.
     /// </exception>
     IAsyncEnumerable<Stream> GetSourceStreamsAsync(
+        SourceOptions options,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Returns an asynchronous enumerable of resolved file paths from the source
+    /// described by <paramref name="options"/>, without opening the files.
+    /// Used by the pipeline orchestrator to enumerate source items and
+    /// dispatch one pipeline execution per item.
+    /// </summary>
+    /// <param name="options">The source configuration describing where to read from.</param>
+    /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+    /// <returns>
+    /// An asynchronous enumerable of absolute file paths to process.
+    /// Returns an empty enumerable when no matching files are found.
+    /// </returns>
+    /// <exception cref="Axbus.Core.Exceptions.AxbusConnectorException">
+    /// Thrown when the source cannot be accessed due to an I/O or permission error.
+    /// </exception>
+    IAsyncEnumerable<string> GetSourcePathsAsync(
         SourceOptions options,
         CancellationToken cancellationToken);
 }

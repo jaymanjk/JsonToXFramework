@@ -101,6 +101,34 @@ public sealed class LocalFileSourceConnector : ISourceConnector
     }
 
     /// <summary>
+    /// Returns an asynchronous enumerable of file paths from the source described
+    /// by <paramref name="options"/> without opening the files.
+    /// </summary>
+    /// <param name="options">The source configuration describing the local path and file pattern.</param>
+    /// <param name="cancellationToken">A token to cancel the enumeration.</param>
+    /// <returns>An asynchronous enumerable of absolute file paths.</returns>
+    /// <exception cref="AxbusConnectorException">
+    /// Thrown when the path does not exist or cannot be accessed.
+    /// </exception>
+    public async IAsyncEnumerable<string> GetSourcePathsAsync(
+        SourceOptions options,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.Path);
+
+        // Reuse the same path resolution logic as GetSourceStreamsAsync
+        var filePaths = GetFilePaths(options);
+
+        foreach (var filePath in filePaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return filePath;
+            await Task.Yield();
+        }
+    }
+
+    /// <summary>
     /// Determines the list of file paths to process based on the source options.
     /// </summary>
     /// <param name="options">The source options containing path and file pattern.</param>

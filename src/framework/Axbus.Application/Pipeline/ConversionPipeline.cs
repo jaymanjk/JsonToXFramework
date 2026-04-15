@@ -85,6 +85,16 @@ public sealed class ConversionPipeline : IConversionPipeline
             module.ConversionName,
             sourcePath);
 
+        // Build per-file source options so the reader opens exactly this file,
+        // not the originating folder path from module.Source
+        var perFileSource = new SourceOptions
+        {
+            Type = module.Source.Type,
+            Path = sourcePath,
+            FilePattern = module.Source.FilePattern,
+            ReadMode = "SingleFile",
+        };
+
         // Stage 1: Read
         var reader = plugin.CreateReader(serviceProvider)
             ?? throw new AxbusPipelineException(
@@ -95,7 +105,7 @@ public sealed class ConversionPipeline : IConversionPipeline
             module.ConversionName,
             plugin.PluginId,
             PipelineStage.Read,
-            () => reader.ReadAsync(module.Source, cancellationToken),
+            () => reader.ReadAsync(perFileSource, cancellationToken),
             cancellationToken).ConfigureAwait(false);
 
         // Stage 2: Parse

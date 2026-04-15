@@ -1,0 +1,41 @@
+[
+  {
+    "employeeId": "EMP-001",
+    "firstName": "John",
+    "lastName": "Smith",
+    "email": "john.smith@company.com",
+    "department": "Engineering",
+    "position": "Senior Developer",
+    "salary": 95000,
+    "hireDate": "2020-06-15",
+    "skills": ["C#", "Azure", "SQL"],
+    "manager": null,
+    "active": true
+  },
+  {
+    "employeeId": "EMP-002",
+    "firstName": "Sarah",
+    "lastName": "Johnson",
+    "email": "sarah.johnson@company.com",
+    "department": "Engineering",
+    "position": "Developer",
+    "salary": 75000,
+    "hireDate": "2021-03-20",
+    "skills": ["JavaScript", "React", "Node.js"],
+    "manager": "EMP-001",
+    "active": true
+  },
+  {
+    "employeeId": "EMP-003",
+    "firstName": "Michael",
+    "lastName": "Chen",
+    "email": "michael.chen@company.com",
+    "department": "Sales",
+    "position": "Account Manager",
+    "salary": 65000,
+    "hireDate": "2022-01-10",
+    "skills": ["Salesforce", "CRM", "Negotiation"],
+    "manager": null,
+    "active": true
+  }
+]

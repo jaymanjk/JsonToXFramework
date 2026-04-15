@@ -5,6 +5,7 @@
 namespace Axbus.Application.Conversion;
 
 using System.Diagnostics;
+using Axbus.Core.Abstractions.Connectors;
 using Axbus.Core.Abstractions.Conversion;
 using Axbus.Core.Abstractions.Factories;
 using Axbus.Core.Abstractions.Notifications;
@@ -36,6 +37,11 @@ public sealed class ConversionRunner : IConversionRunner
     private readonly IPipelineFactory pipelineFactory;
 
     /// <summary>
+    /// Factory for resolving source and target connectors by type.
+    /// </summary>
+    private readonly IConnectorFactory connectorFactory;
+
+    /// <summary>
     /// Publisher for lifecycle event notifications.
     /// </summary>
     private readonly IEventPublisher eventPublisher;
@@ -55,18 +61,21 @@ public sealed class ConversionRunner : IConversionRunner
     /// </summary>
     /// <param name="logger">Logger for runner lifecycle messages.</param>
     /// <param name="pipelineFactory">Factory that creates pipelines per module.</param>
+    /// <param name="connectorFactory">Factory for resolving source connectors.</param>
     /// <param name="eventPublisher">Publisher for observable event notifications.</param>
     /// <param name="progressReporter">Reporter for IProgress progress notifications.</param>
     /// <param name="options">Root Axbus settings bound from configuration.</param>
     public ConversionRunner(
         ILogger<ConversionRunner> logger,
         IPipelineFactory pipelineFactory,
+        IConnectorFactory connectorFactory,
         IEventPublisher eventPublisher,
         IProgressReporter progressReporter,
         IOptions<AxbusRootSettings> options)
     {
         this.logger = logger;
         this.pipelineFactory = pipelineFactory;
+        this.connectorFactory = connectorFactory;
         this.eventPublisher = eventPublisher;
         this.progressReporter = progressReporter;
         this.settings = options.Value;
@@ -220,25 +229,61 @@ public sealed class ConversionRunner : IConversionRunner
                 PercentComplete = 0,
             });
 
-            // Get list of source files from source path
-            // For now, treat single file execution - full file enumeration
-            // is handled by the infrastructure layer connectors
-            var writeResult = await pipeline.ExecuteAsync(
-                module,
-                module.Source.Path,
-                cancellationToken).ConfigureAwait(false);
-
-            result.FilesProcessed = 1;
-            result.RowsWritten = writeResult.RowsWritten;
-            result.ErrorRowsWritten = writeResult.ErrorRowsWritten;
-            result.OutputFilePath = writeResult.OutputPath;
-            result.ErrorFilePath = writeResult.ErrorFilePath;
-            result.Status = ConversionStatus.Completed;
-
-            if (!string.IsNullOrEmpty(writeResult.OutputPath))
+            // Enumerate source file paths via the connector (keeps Application file-system agnostic)
+            var connector = connectorFactory.GetSourceConnector(module.Source);
+            var sourcePaths = new List<string>();
+            await foreach (var path in connector.GetSourcePathsAsync(module.Source, cancellationToken)
+                .ConfigureAwait(false))
             {
-                result.OutputFiles.Add(writeResult.OutputPath);
+                sourcePaths.Add(path);
             }
+
+            logger.LogInformation(
+                "Module '{ModuleName}' discovered {Count} source file(s).",
+                module.ConversionName,
+                sourcePaths.Count);
+
+            // Execute pipeline once per source file and aggregate results
+            var totalFiles = sourcePaths.Count;
+            var processedFiles = 0;
+
+            foreach (var sourcePath in sourcePaths)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var writeResult = await pipeline.ExecuteAsync(module, sourcePath, cancellationToken)
+                    .ConfigureAwait(false);
+
+                processedFiles++;
+                result.RowsWritten += writeResult.RowsWritten;
+                result.ErrorRowsWritten += writeResult.ErrorRowsWritten;
+
+                if (!string.IsNullOrEmpty(writeResult.OutputPath))
+                {
+                    result.OutputFiles.Add(writeResult.OutputPath);
+                    result.OutputFilePath = writeResult.OutputPath;
+                }
+
+                if (!string.IsNullOrEmpty(writeResult.ErrorFilePath))
+                {
+                    result.ErrorFilePath = writeResult.ErrorFilePath;
+                }
+
+                // Report per-file progress
+                progressReporter.Report(new ConversionProgress
+                {
+                    ModuleName = module.ConversionName,
+                    Status = ConversionStatus.Converting,
+                    ProcessedFiles = processedFiles,
+                    TotalFiles = totalFiles,
+                    PercentComplete = totalFiles > 0
+                        ? processedFiles * 100.0 / totalFiles
+                        : 100.0,
+                });
+            }
+
+            result.FilesProcessed = processedFiles;
+            result.Status = ConversionStatus.Completed;
 
             Publish(module.ConversionName, ConversionEventType.ModuleCompleted,
                 $"Module '{module.ConversionName}' completed. Rows written: {result.RowsWritten}");

@@ -80,6 +80,10 @@ public static class ApplicationServiceExtensions
         services.AddSingleton<IProgressReporter, ProgressReporter>();
         services.AddSingleton<IEventPublisher, EventPublisher>();
 
+        // Plugin registration service - must be registered before ConversionHostedService
+        // so the registry is fully populated before any pipeline is created
+        services.AddHostedService<PluginRegistrationService>();
+
         return services;
     }
 }

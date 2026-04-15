@@ -22,6 +22,13 @@
     <Using Include="NUnit.Framework" />
   </ItemGroup>
 
+  <!-- Copy all TestData files to output directory for test execution -->
+  <ItemGroup>
+    <Content Include="TestData\**\*.*">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\framework\Axbus.Core\Axbus.Core.csproj" />
     <ProjectReference Include="..\..\src\plugins\Axbus.Plugin.Writer.Csv\Axbus.Plugin.Writer.Csv.csproj" />

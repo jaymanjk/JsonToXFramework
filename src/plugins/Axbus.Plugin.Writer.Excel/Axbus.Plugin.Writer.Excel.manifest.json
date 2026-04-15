@@ -3,11 +3,11 @@
   "PluginId": "axbus.plugin.writer.excel",
   "Version": "1.0.0",
   "FrameworkVersion": "1.0.0",
-  "SourceFormat": null,
+  "SourceFormat": "json",
   "TargetFormat": "excel",
   "SupportedStages": [ "Write" ],
   "IsBundled": false,
   "Author": "Axel Johnson International",
-  "Description": "Writes Axbus pipeline output to Excel (.xlsx) files using ClosedXML.",
+  "Description": "Writes Axbus pipeline output to Excel (.xlsx) files using ClosedXML. Works with JSON reader.",
   "Dependencies": [ "ClosedXML" ]
 }

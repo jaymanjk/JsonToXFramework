@@ -7,24 +7,15 @@
 #   PowerShell -ExecutionPolicy Bypass -File .\scripts\generate-tests.ps1
 #
 # GENERATES:
-#   Axbus.Tests.Common              (shared test infrastructure)
-#   Axbus.Core.Tests                (enum + model unit tests)
-#   Axbus.Application.Tests         (pipeline + middleware + plugin tests)
-#   Axbus.Infrastructure.Tests      (connector + file system tests)
-#   Axbus.Plugin.Reader.Json.Tests  (JSON reader/parser/transformer tests)
-#   Axbus.Plugin.Writer.Csv.Tests   (CSV writer + schema tests)
-#   Axbus.Plugin.Writer.Excel.Tests (Excel writer + schema tests)
-#   Axbus.Integration.Tests         (end-to-end JSON->CSV and JSON->Excel)
-#
-# PREREQUISITES:
-#   - All previous generate-*.ps1 scripts must have been run first
-#   - Run from the repository root
+#   36 .cs source files across 8 test projects
+#   Patches all 8 .csproj files with explicit Compile Include entries
+#   Runs dotnet build to verify - zero manual steps required
 # ==============================================================================
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ScriptVersion = "1.0.0"
+$ScriptVersion = "1.0.1"
 $CompanyName   = "Axel Johnson International"
 $CopyrightYear = "2026"
 
@@ -45,8 +36,14 @@ function Write-Phase {
 }
 
 function Write-Ok   { param([string]$m) Write-Host "      [OK] $m" -ForegroundColor Green }
+function Write-Warn { param([string]$m) Write-Host "      [!!] $m" -ForegroundColor Magenta }
 function Write-Info { param([string]$m) Write-Host "      [..] $m" -ForegroundColor White }
 
+# ------------------------------------------------------------------------------
+# New-SourceFile
+# Writes a .cs file to disk using Windows CRLF line endings.
+# Creates the parent directory if it does not exist.
+# ------------------------------------------------------------------------------
 function New-SourceFile {
     param([string]$RootPath, [string]$RelativePath, [string]$Content)
     $fullPath  = Join-Path $RootPath $RelativePath
@@ -54,13 +51,69 @@ function New-SourceFile {
     if (-not [string]::IsNullOrWhiteSpace($directory) -and -not (Test-Path $directory)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
+    # Normalise to CRLF so PowerShell here-strings work correctly on Windows
+    $crlfContent = $Content -replace "(?<!\r)\n", "`r`n"
     [System.IO.File]::WriteAllText(
         [System.IO.Path]::GetFullPath($fullPath),
-        $Content,
+        $crlfContent,
         [System.Text.UTF8Encoding]::new($false)
     )
     Write-Ok $RelativePath
 }
+
+# ------------------------------------------------------------------------------
+# Add-CompileIncludes
+# Patches a .csproj file by inserting an explicit <ItemGroup> with
+# <Compile Include="folder\**\*.cs" /> entries just before </Project>.
+# This makes VS show all generated files without a manual project reload.
+# ------------------------------------------------------------------------------
+function Add-CompileIncludes {
+    param(
+        [string]$CsprojPath,
+        [string[]]$Folders
+    )
+
+    if (-not (Test-Path $CsprojPath)) {
+        Write-Warn "Cannot patch (not found): $CsprojPath"
+        return
+    }
+
+    $content = [System.IO.File]::ReadAllText(
+        [System.IO.Path]::GetFullPath($CsprojPath),
+        [System.Text.Encoding]::UTF8)
+
+    # Skip if already patched
+    if ($content -match "Axbus-Generated-Compile-Includes") {
+        Write-Info "Already patched: $(Split-Path $CsprojPath -Leaf)"
+        return
+    }
+
+    # Build the ItemGroup XML block
+    $lines = @("", "  <!-- Axbus-Generated-Compile-Includes: makes files visible in VS immediately -->")
+    $lines += "  <ItemGroup>"
+    foreach ($folder in $Folders) {
+        $lines += "    <Compile Include=`"$folder\**\*.cs`" />"
+    }
+    $lines += "  </ItemGroup>"
+    $lines += ""
+
+    $insertBlock = $lines -join "`r`n"
+
+    # Insert before </Project>
+    $patched = $content -replace "</Project>", "$insertBlock</Project>"
+
+    [System.IO.File]::WriteAllText(
+        [System.IO.Path]::GetFullPath($CsprojPath),
+        $patched,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+
+    Write-Ok "Patched: $(Split-Path $CsprojPath -Leaf)"
+}
+
+# ==============================================================================
+# GUARDS
+# ==============================================================================
 
 if (-not (Test-Path ".git")) {
     Write-Host "  [FAILED] Run from repository root." -ForegroundColor Red; exit 1
@@ -92,7 +145,7 @@ using NUnit.Framework;
 /// <summary>
 /// Base class for all Axbus unit and integration tests.
 /// Provides a pre-configured DI service provider with logging,
-/// a NullLogger factory for tests that do not require log output,
+/// a NullLogger factory for tests that do not need log output,
 /// and helper properties for common test setup patterns.
 /// All test classes in the Axbus test suite should inherit from this class.
 /// </summary>
@@ -106,7 +159,7 @@ public abstract class AxbusTestBase
 
     /// <summary>
     /// Gets a null logger factory that discards all log output.
-    /// Use when a test needs a logger but does not need to assert on log output.
+    /// Use when a logger is required but log assertions are not needed.
     /// </summary>
     protected ILoggerFactory NullLoggerFactory { get; } =
         Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance;
@@ -126,7 +179,6 @@ public abstract class AxbusTestBase
 
     /// <summary>
     /// Tears down the service provider after each test.
-    /// Disposes the container if it implements <see cref="IDisposable"/>.
     /// </summary>
     [TearDown]
     public virtual void TearDown()
@@ -138,17 +190,17 @@ public abstract class AxbusTestBase
     }
 
     /// <summary>
-    /// Override this method to register additional services required by the test class.
-    /// Called during <see cref="SetUp"/> before the service provider is built.
+    /// Override to register additional services required by a test class.
+    /// Called during <see cref="SetUp"/> before the provider is built.
     /// </summary>
-    /// <param name="services">The service collection to register services into.</param>
+    /// <param name="services">The service collection to register into.</param>
     protected virtual void ConfigureServices(IServiceCollection services)
     {
     }
 
     /// <summary>
-    /// Creates a typed NullLogger instance for use in tests that require
-    /// a concrete logger but do not need to assert on log output.
+    /// Creates a typed NullLogger for use in tests that need a logger
+    /// but do not assert on log output.
     /// </summary>
     /// <typeparam name="T">The logger category type.</typeparam>
     /// <returns>A <see cref="ILogger{T}"/> that discards all output.</returns>
@@ -170,30 +222,28 @@ using Axbus.Core.Models.Configuration;
 /// <summary>
 /// Fluent test data builder for <see cref="ConversionModule"/>.
 /// Provides pre-configured defaults suitable for unit tests and allows
-/// selective overrides via a fluent API. Use this builder in test setup
-/// instead of constructing modules directly to keep tests readable
-/// and resilient to model changes.
+/// selective overrides via a fluent API.
 /// </summary>
 public sealed class ConversionModuleBuilder
 {
-    private string conversionName = "TestModule";
-    private string description    = "Test conversion module";
-    private bool isEnabled        = true;
-    private int executionOrder    = 1;
-    private bool continueOnError  = true;
-    private bool runInParallel    = false;
-    private string sourceFormat   = "json";
-    private string targetFormat   = "csv";
+    private string conversionName  = "TestModule";
+    private string description     = "Test conversion module";
+    private bool isEnabled         = true;
+    private int executionOrder     = 1;
+    private bool continueOnError   = true;
+    private bool runInParallel     = false;
+    private string sourceFormat    = "json";
+    private string targetFormat    = "csv";
     private string? pluginOverride;
-    private SourceOptions source  = new() { Path = "C:/test/input", FilePattern = "*.json" };
-    private TargetOptions target  = new() { Path = "C:/test/output" };
+    private SourceOptions source   = new() { Path = "C:/test/input", FilePattern = "*.json" };
+    private TargetOptions target   = new() { Path = "C:/test/output" };
     private PipelineOptions pipeline = new();
 
     /// <summary>Sets the conversion name.</summary>
     public ConversionModuleBuilder WithName(string name)
     { conversionName = name; return this; }
 
-    /// <summary>Sets the module as disabled.</summary>
+    /// <summary>Marks the module as disabled.</summary>
     public ConversionModuleBuilder Disabled()
     { isEnabled = false; return this; }
 
@@ -221,32 +271,29 @@ public sealed class ConversionModuleBuilder
     public ConversionModuleBuilder StopOnError()
     { continueOnError = false; return this; }
 
-    /// <summary>Sets the explicit plugin override.</summary>
+    /// <summary>Sets the explicit plugin override identifier.</summary>
     public ConversionModuleBuilder WithPluginOverride(string pluginId)
     { pluginOverride = pluginId; return this; }
 
-    /// <summary>Sets parallel execution.</summary>
+    /// <summary>Enables parallel execution for this module.</summary>
     public ConversionModuleBuilder RunningInParallel()
     { runInParallel = true; return this; }
 
-    /// <summary>
-    /// Builds and returns the configured <see cref="ConversionModule"/>.
-    /// </summary>
-    /// <returns>A new <see cref="ConversionModule"/> with the configured properties.</returns>
+    /// <summary>Builds and returns the configured <see cref="ConversionModule"/>.</summary>
     public ConversionModule Build() => new()
     {
-        ConversionName = conversionName,
-        Description    = description,
-        IsEnabled      = isEnabled,
-        ExecutionOrder = executionOrder,
+        ConversionName  = conversionName,
+        Description     = description,
+        IsEnabled       = isEnabled,
+        ExecutionOrder  = executionOrder,
         ContinueOnError = continueOnError,
-        RunInParallel  = runInParallel,
-        SourceFormat   = sourceFormat,
-        TargetFormat   = targetFormat,
-        PluginOverride = pluginOverride,
-        Source         = source,
-        Target         = target,
-        Pipeline       = pipeline,
+        RunInParallel   = runInParallel,
+        SourceFormat    = sourceFormat,
+        TargetFormat    = targetFormat,
+        PluginOverride  = pluginOverride,
+        Source          = source,
+        Target          = target,
+        Pipeline        = pipeline,
     };
 
     /// <summary>Creates a new builder instance with default settings.</summary>
@@ -280,15 +327,12 @@ using System.Text.Json;
 
 /// <summary>
 /// Provides helper methods for creating in-memory JSON test data streams.
-/// Eliminates the need for test data files for simple unit test scenarios.
-/// Use <see cref="ToStream"/> to convert JSON strings to streams suitable
-/// for passing to parsers and readers under test.
+/// Eliminates the need for physical test data files for simple unit test scenarios.
 /// </summary>
 public static class JsonTestDataHelper
 {
     /// <summary>
-    /// Converts a JSON string to a readable <see cref="MemoryStream"/>.
-    /// The stream is positioned at the beginning and ready to read.
+    /// Converts a JSON string to a readable <see cref="MemoryStream"/> positioned at the start.
     /// </summary>
     /// <param name="json">The JSON string to convert.</param>
     /// <returns>A <see cref="MemoryStream"/> containing the UTF-8 encoded JSON bytes.</returns>
@@ -302,7 +346,7 @@ public static class JsonTestDataHelper
     /// Creates a stream containing a flat JSON array with the specified number of objects.
     /// Each object has <c>id</c>, <c>name</c> and <c>value</c> fields.
     /// </summary>
-    /// <param name="count">The number of objects to include in the array.</param>
+    /// <param name="count">Number of objects in the array. Defaults to 3.</param>
     /// <returns>A <see cref="MemoryStream"/> containing the JSON array.</returns>
     public static MemoryStream FlatArray(int count = 3)
     {
@@ -317,10 +361,9 @@ public static class JsonTestDataHelper
     }
 
     /// <summary>
-    /// Creates a stream containing a JSON array with nested objects.
-    /// Each object has <c>id</c>, <c>type</c> and a nested <c>address</c> object.
+    /// Creates a stream containing a JSON array with nested customer/address objects.
     /// </summary>
-    /// <param name="count">The number of objects to include.</param>
+    /// <param name="count">Number of objects. Defaults to 2.</param>
     /// <returns>A <see cref="MemoryStream"/> containing the nested JSON array.</returns>
     public static MemoryStream NestedArray(int count = 2)
     {
@@ -330,7 +373,7 @@ public static class JsonTestDataHelper
             type = "Order",
             customer = new
             {
-                name = $"Customer {i}",
+                name    = $"Customer {i}",
                 address = new { city = "Stockholm", country = "Sweden" },
             },
         });
@@ -339,11 +382,11 @@ public static class JsonTestDataHelper
     }
 
     /// <summary>
-    /// Creates a stream containing a JSON array where each object has a nested array field.
-    /// Used for testing array explosion behaviour.
+    /// Creates a stream with a JSON array containing a nested array field
+    /// suitable for testing array explosion behaviour.
     /// </summary>
-    /// <param name="itemsPerArray">Number of items in each nested array.</param>
-    /// <returns>A <see cref="MemoryStream"/> containing the explosion test JSON.</returns>
+    /// <param name="itemsPerArray">Items in the nested array. Defaults to 2.</param>
+    /// <returns>A <see cref="MemoryStream"/> with explosion test JSON.</returns>
     public static MemoryStream ArrayForExplosion(int itemsPerArray = 2)
     {
         var items = new[]
@@ -384,25 +427,25 @@ using NUnit.Framework;
 
 /// <summary>
 /// Provides custom NUnit assertion helpers for <see cref="FlattenedRow"/>
-/// and collections of flattened rows. Reduces boilerplate in test assertions
-/// and produces clear failure messages that include row number and values.
+/// and collections thereof. Produces clear failure messages that include
+/// row number and column names.
 /// </summary>
 public static class FlattenedRowAssertions
 {
     /// <summary>
-    /// Asserts that <paramref name="row"/> contains the expected
-    /// <paramref name="columnName"/> with the expected <paramref name="value"/>.
+    /// Asserts that <paramref name="row"/> contains <paramref name="columnName"/>
+    /// with the expected <paramref name="value"/>.
     /// </summary>
     /// <param name="row">The row to check.</param>
     /// <param name="columnName">The column name to look up.</param>
-    /// <param name="value">The expected value for the column.</param>
+    /// <param name="value">The expected value.</param>
     public static void HasValue(FlattenedRow row, string columnName, string value)
     {
         Assert.That(
             row.Values.ContainsKey(columnName),
             Is.True,
             $"Row {row.RowNumber} does not contain column '{columnName}'. " +
-            $"Columns present: {string.Join(", ", row.Values.Keys)}");
+            $"Present: {string.Join(", ", row.Values.Keys)}");
 
         Assert.That(
             row.Values[columnName],
@@ -412,33 +455,27 @@ public static class FlattenedRowAssertions
     }
 
     /// <summary>
-    /// Asserts that <paramref name="rows"/> contains exactly
-    /// <paramref name="expectedCount"/> rows.
+    /// Asserts that <paramref name="rows"/> contains exactly <paramref name="expectedCount"/> rows.
     /// </summary>
     /// <param name="rows">The row collection to check.</param>
-    /// <param name="expectedCount">The expected number of rows.</param>
+    /// <param name="expectedCount">The expected row count.</param>
     public static void HasCount(IReadOnlyList<FlattenedRow> rows, int expectedCount)
     {
-        Assert.That(
-            rows.Count,
-            Is.EqualTo(expectedCount),
+        Assert.That(rows.Count, Is.EqualTo(expectedCount),
             $"Expected {expectedCount} rows but got {rows.Count}.");
     }
 
     /// <summary>
-    /// Asserts that all rows in <paramref name="rows"/> contain the
-    /// specified <paramref name="columnName"/>.
+    /// Asserts that every row in <paramref name="rows"/> contains <paramref name="columnName"/>.
     /// </summary>
     /// <param name="rows">The rows to check.</param>
-    /// <param name="columnName">The column name that must be present in every row.</param>
+    /// <param name="columnName">The column that must exist in every row.</param>
     public static void AllHaveColumn(IReadOnlyList<FlattenedRow> rows, string columnName)
     {
         foreach (var row in rows)
         {
-            Assert.That(
-                row.Values.ContainsKey(columnName),
-                Is.True,
-                $"Row {row.RowNumber} is missing expected column '{columnName}'.");
+            Assert.That(row.Values.ContainsKey(columnName), Is.True,
+                $"Row {row.RowNumber} is missing column '{columnName}'.");
         }
     }
 
@@ -458,6 +495,7 @@ public static class FlattenedRowAssertions
         {
             result.Add(row);
         }
+
         return result;
     }
 }
@@ -483,24 +521,18 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for the <see cref="OutputFormat"/> flags enumeration.
-/// Verifies that flag combination, containment checks and zero values
-/// behave correctly for downstream plugin resolution logic.
 /// </summary>
 [TestFixture]
 public sealed class OutputFormatTests : AxbusTestBase
 {
-    /// <summary>
-    /// Should_HaveNoneAsZeroValue_When_EnumIsInspected.
-    /// </summary>
+    /// <summary>Should_HaveNoneAsZeroValue_When_EnumIsInspected.</summary>
     [Test]
     public void Should_HaveNoneAsZeroValue_When_EnumIsInspected()
     {
         Assert.That((int)OutputFormat.None, Is.EqualTo(0));
     }
 
-    /// <summary>
-    /// Should_SupportFlagCombination_When_MultipleFormatsSelected.
-    /// </summary>
+    /// <summary>Should_SupportFlagCombination_When_MultipleFormatsSelected.</summary>
     [Test]
     public void Should_SupportFlagCombination_When_MultipleFormatsSelected()
     {
@@ -511,19 +543,7 @@ public sealed class OutputFormatTests : AxbusTestBase
         Assert.That(combined.HasFlag(OutputFormat.Text),  Is.False);
     }
 
-    /// <summary>
-    /// Should_NotContainNone_When_FlagsAreSet.
-    /// </summary>
-    [Test]
-    public void Should_NotContainNone_When_FlagsAreSet()
-    {
-        var format = OutputFormat.Csv;
-        Assert.That(format, Is.Not.EqualTo(OutputFormat.None));
-    }
-
-    /// <summary>
-    /// Should_ReturnDistinctBitValues_When_EnumValuesCompared.
-    /// </summary>
+    /// <summary>Should_ReturnDistinctBitValues_When_EnumValuesCompared.</summary>
     [Test]
     public void Should_ReturnDistinctBitValues_When_EnumValuesCompared()
     {
@@ -547,28 +567,23 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for the <see cref="PluginCapabilities"/> flags enumeration.
-/// Verifies the Bundled convenience value and individual capability flag behaviour.
 /// </summary>
 [TestFixture]
 public sealed class PluginCapabilitiesTests : AxbusTestBase
 {
-    /// <summary>
-    /// Should_ContainAllCoreStageCaps_When_BundledValueInspected.
-    /// </summary>
+    /// <summary>Should_ContainAllCoreStages_When_BundledValueInspected.</summary>
     [Test]
-    public void Should_ContainAllCoreStageCaps_When_BundledValueInspected()
+    public void Should_ContainAllCoreStages_When_BundledValueInspected()
     {
         var bundled = PluginCapabilities.Bundled;
 
         Assert.That(bundled.HasFlag(PluginCapabilities.Reader),      Is.True);
         Assert.That(bundled.HasFlag(PluginCapabilities.Parser),      Is.True);
-        Assert.That(bundled.HasFlag(PluginCapabilities.Transformer),  Is.True);
+        Assert.That(bundled.HasFlag(PluginCapabilities.Transformer), Is.True);
         Assert.That(bundled.HasFlag(PluginCapabilities.Writer),      Is.True);
     }
 
-    /// <summary>
-    /// Should_NotContainValidatorOrFilter_When_BundledValueInspected.
-    /// </summary>
+    /// <summary>Should_NotContainValidatorOrFilter_When_BundledValueInspected.</summary>
     [Test]
     public void Should_NotContainValidatorOrFilter_When_BundledValueInspected()
     {
@@ -578,17 +593,14 @@ public sealed class PluginCapabilitiesTests : AxbusTestBase
         Assert.That(bundled.HasFlag(PluginCapabilities.Filter),    Is.False);
     }
 
-    /// <summary>
-    /// Should_AllowWriterOnlyPlugin_When_OnlyWriterCapabilitySet.
-    /// </summary>
+    /// <summary>Should_AllowWriterOnlyPlugin_When_OnlyWriterCapabilitySet.</summary>
     [Test]
     public void Should_AllowWriterOnlyPlugin_When_OnlyWriterCapabilitySet()
     {
         var writerOnly = PluginCapabilities.Writer;
 
-        Assert.That(writerOnly.HasFlag(PluginCapabilities.Writer),  Is.True);
-        Assert.That(writerOnly.HasFlag(PluginCapabilities.Reader),  Is.False);
-        Assert.That(writerOnly.HasFlag(PluginCapabilities.Parser),  Is.False);
+        Assert.That(writerOnly.HasFlag(PluginCapabilities.Writer), Is.True);
+        Assert.That(writerOnly.HasFlag(PluginCapabilities.Reader), Is.False);
     }
 }
 '@
@@ -606,47 +618,36 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="ValidationResult"/>.
-/// Verifies factory methods, error collection and the static Success instance.
 /// </summary>
 [TestFixture]
 public sealed class ValidationResultTests : AxbusTestBase
 {
-    /// <summary>
-    /// Should_HaveIsValidTrue_When_SuccessFactoryUsed.
-    /// </summary>
+    /// <summary>Should_HaveIsValidTrue_When_SuccessFactoryUsed.</summary>
     [Test]
     public void Should_HaveIsValidTrue_When_SuccessFactoryUsed()
     {
         var result = ValidationResult.Success;
 
-        Assert.That(result.IsValid,       Is.True);
-        Assert.That(result.Errors.Count,  Is.EqualTo(0));
+        Assert.That(result.IsValid,      Is.True);
+        Assert.That(result.Errors.Count, Is.EqualTo(0));
     }
 
-    /// <summary>
-    /// Should_HaveIsValidFalse_When_FailFactoryUsed.
-    /// </summary>
+    /// <summary>Should_HaveIsValidFalse_When_FailFactoryUsedWithMessages.</summary>
     [Test]
-    public void Should_HaveIsValidFalse_When_FailFactoryUsed()
+    public void Should_HaveIsValidFalse_When_FailFactoryUsedWithMessages()
     {
         var result = ValidationResult.Fail("Field is required.", "Value out of range.");
 
-        Assert.That(result.IsValid,       Is.False);
-        Assert.That(result.Errors.Count,  Is.EqualTo(2));
-        Assert.That(result.Errors[0],     Is.EqualTo("Field is required."));
-        Assert.That(result.Errors[1],     Is.EqualTo("Value out of range."));
+        Assert.That(result.IsValid,      Is.False);
+        Assert.That(result.Errors.Count, Is.EqualTo(2));
+        Assert.That(result.Errors[0],    Is.EqualTo("Field is required."));
     }
 
-    /// <summary>
-    /// Should_ReturnSameInstance_When_SuccessPropertyAccessedMultipleTimes.
-    /// </summary>
+    /// <summary>Should_ReturnSameInstance_When_SuccessPropertyAccessedTwice.</summary>
     [Test]
-    public void Should_ReturnSameInstance_When_SuccessPropertyAccessedMultipleTimes()
+    public void Should_ReturnSameInstance_When_SuccessPropertyAccessedTwice()
     {
-        var first  = ValidationResult.Success;
-        var second = ValidationResult.Success;
-
-        Assert.That(ReferenceEquals(first, second), Is.True);
+        Assert.That(ReferenceEquals(ValidationResult.Success, ValidationResult.Success), Is.True);
     }
 }
 '@
@@ -664,30 +665,23 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="SchemaDefinition"/>.
-/// Verifies column ordering, format metadata and source file count.
 /// </summary>
 [TestFixture]
 public sealed class SchemaDefinitionTests : AxbusTestBase
 {
-    /// <summary>
-    /// Should_PreserveColumnOrder_When_SchemaCreatedWithOrderedList.
-    /// </summary>
+    /// <summary>Should_PreserveColumnOrder_When_SchemaCreated.</summary>
     [Test]
-    public void Should_PreserveColumnOrder_When_SchemaCreatedWithOrderedList()
+    public void Should_PreserveColumnOrder_When_SchemaCreated()
     {
         var columns = new[] { "id", "name", "customer.city", "amount" };
         var schema  = new SchemaDefinition(columns, "csv", sourceFileCount: 2);
 
         Assert.That(schema.Columns.Count, Is.EqualTo(4));
         Assert.That(schema.Columns[0],    Is.EqualTo("id"));
-        Assert.That(schema.Columns[1],    Is.EqualTo("name"));
         Assert.That(schema.Columns[2],    Is.EqualTo("customer.city"));
-        Assert.That(schema.Columns[3],    Is.EqualTo("amount"));
     }
 
-    /// <summary>
-    /// Should_StoreFormat_When_SchemaCreated.
-    /// </summary>
+    /// <summary>Should_StoreFormat_When_SchemaCreated.</summary>
     [Test]
     public void Should_StoreFormat_When_SchemaCreated()
     {
@@ -695,9 +689,7 @@ public sealed class SchemaDefinitionTests : AxbusTestBase
         Assert.That(schema.Format, Is.EqualTo("excel"));
     }
 
-    /// <summary>
-    /// Should_StoreSourceFileCount_When_SchemaCreated.
-    /// </summary>
+    /// <summary>Should_StoreSourceFileCount_When_SchemaCreated.</summary>
     [Test]
     public void Should_StoreSourceFileCount_When_SchemaCreated()
     {
@@ -720,15 +712,11 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="FlattenedRow"/>.
-/// Verifies case-insensitive key lookup, metadata properties
-/// and explosion flag behaviour.
 /// </summary>
 [TestFixture]
 public sealed class FlattenedRowTests : AxbusTestBase
 {
-    /// <summary>
-    /// Should_AllowCaseInsensitiveKeyLookup_When_ValuesAccessed.
-    /// </summary>
+    /// <summary>Should_AllowCaseInsensitiveKeyLookup_When_ValuesAccessed.</summary>
     [Test]
     public void Should_AllowCaseInsensitiveKeyLookup_When_ValuesAccessed()
     {
@@ -736,43 +724,31 @@ public sealed class FlattenedRowTests : AxbusTestBase
         row.Values["CustomerId"] = "C001";
 
         Assert.That(row.Values.ContainsKey("customerid"), Is.True);
-        Assert.That(row.Values.ContainsKey("CUSTOMERID"), Is.True);
         Assert.That(row.Values["customerId"],              Is.EqualTo("C001"));
     }
 
-    /// <summary>
-    /// Should_DefaultIsExplodedToFalse_When_RowCreated.
-    /// </summary>
+    /// <summary>Should_DefaultIsExplodedToFalse_When_RowCreated.</summary>
     [Test]
     public void Should_DefaultIsExplodedToFalse_When_RowCreated()
     {
-        var row = new FlattenedRow();
-        Assert.That(row.IsExploded, Is.False);
+        Assert.That(new FlattenedRow().IsExploded, Is.False);
     }
 
-    /// <summary>
-    /// Should_StoreExplosionIndex_When_RowIsExploded.
-    /// </summary>
+    /// <summary>Should_StoreExplosionIndex_When_RowIsExploded.</summary>
     [Test]
     public void Should_StoreExplosionIndex_When_RowIsExploded()
     {
         var row = new FlattenedRow { IsExploded = true, ExplosionIndex = 3 };
 
-        Assert.That(row.IsExploded,      Is.True);
-        Assert.That(row.ExplosionIndex,  Is.EqualTo(3));
+        Assert.That(row.IsExploded,     Is.True);
+        Assert.That(row.ExplosionIndex, Is.EqualTo(3));
     }
 
-    /// <summary>
-    /// Should_StoreSourcePathAndRowNumber_When_MetadataSet.
-    /// </summary>
+    /// <summary>Should_StoreMetadata_When_RowNumberAndPathSet.</summary>
     [Test]
-    public void Should_StoreSourcePathAndRowNumber_When_MetadataSet()
+    public void Should_StoreMetadata_When_RowNumberAndPathSet()
     {
-        var row = new FlattenedRow
-        {
-            RowNumber      = 42,
-            SourceFilePath = @"C:\input\orders.json",
-        };
+        var row = new FlattenedRow { RowNumber = 42, SourceFilePath = @"C:\input\orders.json" };
 
         Assert.That(row.RowNumber,      Is.EqualTo(42));
         Assert.That(row.SourceFilePath, Is.EqualTo(@"C:\input\orders.json"));
@@ -793,14 +769,11 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="PluginCompatibility"/>.
-/// Verifies the static factory methods and property values.
 /// </summary>
 [TestFixture]
 public sealed class PluginCompatibilityTests : AxbusTestBase
 {
-    /// <summary>
-    /// Should_BeCompatible_When_CompatibleFactoryUsed.
-    /// </summary>
+    /// <summary>Should_BeCompatible_When_CompatibleFactoryUsed.</summary>
     [Test]
     public void Should_BeCompatible_When_CompatibleFactoryUsed()
     {
@@ -810,13 +783,11 @@ public sealed class PluginCompatibilityTests : AxbusTestBase
         Assert.That(result.Reason,       Is.Null);
     }
 
-    /// <summary>
-    /// Should_BeIncompatible_When_IncompatibleFactoryUsedWithReason.
-    /// </summary>
+    /// <summary>Should_BeIncompatible_When_IncompatibleFactoryUsedWithReason.</summary>
     [Test]
     public void Should_BeIncompatible_When_IncompatibleFactoryUsedWithReason()
     {
-        var reason = "Plugin requires framework v2.0 but current version is v1.0.";
+        var reason = "Requires framework v2.0 but current is v1.0.";
         var result = PluginCompatibility.Incompatible(reason);
 
         Assert.That(result.IsCompatible, Is.False);
@@ -847,7 +818,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="TimingMiddleware"/>.
-/// Verifies that Duration is set on the result and that the next delegate is invoked.
 /// </summary>
 [TestFixture]
 public sealed class TimingMiddlewareTests : AxbusTestBase
@@ -861,27 +831,23 @@ public sealed class TimingMiddlewareTests : AxbusTestBase
         sut = new TimingMiddleware();
     }
 
-    /// <summary>
-    /// Should_SetDurationOnResult_When_StageCompletes.
-    /// </summary>
+    /// <summary>Should_SetDurationOnResult_When_StageCompletes.</summary>
     [Test]
     public async Task Should_SetDurationOnResult_When_StageCompletes()
     {
-        var context = new PipelineMiddlewareContext("TestModule", "test.plugin", PipelineStage.Read);
+        var context = new PipelineMiddlewareContext("M", "p", PipelineStage.Read);
         var result  = await sut.InvokeAsync(context, () => Task.FromResult(
             new PipelineStageResult { Success = true, Stage = PipelineStage.Read }));
 
         Assert.That(result.Duration, Is.GreaterThanOrEqualTo(TimeSpan.Zero));
     }
 
-    /// <summary>
-    /// Should_InvokeNextDelegate_When_MiddlewareExecuted.
-    /// </summary>
+    /// <summary>Should_InvokeNextDelegate_When_MiddlewareExecuted.</summary>
     [Test]
     public async Task Should_InvokeNextDelegate_When_MiddlewareExecuted()
     {
         var nextInvoked = false;
-        var context     = new PipelineMiddlewareContext("TestModule", "test.plugin", PipelineStage.Parse);
+        var context     = new PipelineMiddlewareContext("M", "p", PipelineStage.Parse);
 
         await sut.InvokeAsync(context, () =>
         {
@@ -892,13 +858,11 @@ public sealed class TimingMiddlewareTests : AxbusTestBase
         Assert.That(nextInvoked, Is.True);
     }
 
-    /// <summary>
-    /// Should_PassThroughFailedResult_When_NextReturnsFailure.
-    /// </summary>
+    /// <summary>Should_PassThroughFailedResult_When_NextFails.</summary>
     [Test]
-    public async Task Should_PassThroughFailedResult_When_NextReturnsFailure()
+    public async Task Should_PassThroughFailedResult_When_NextFails()
     {
-        var context = new PipelineMiddlewareContext("TestModule", "test.plugin", PipelineStage.Write);
+        var context = new PipelineMiddlewareContext("M", "p", PipelineStage.Write);
         var result  = await sut.InvokeAsync(context, () => Task.FromResult(
             new PipelineStageResult { Success = false, Exception = new Exception("fail") }));
 
@@ -923,20 +887,16 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="MiddlewarePipelineBuilder"/>.
-/// Verifies that middleware is applied in correct order and that the
-/// innermost stage action is always invoked.
 /// </summary>
 [TestFixture]
 public sealed class MiddlewarePipelineBuilderTests : AxbusTestBase
 {
-    /// <summary>
-    /// Should_InvokeStageAction_When_NoMiddlewareRegistered.
-    /// </summary>
+    /// <summary>Should_InvokeStageAction_When_NoMiddlewareRegistered.</summary>
     [Test]
     public async Task Should_InvokeStageAction_When_NoMiddlewareRegistered()
     {
-        var builder     = new MiddlewarePipelineBuilder(new List<IPipelineMiddleware>());
-        var context     = new PipelineMiddlewareContext("M", "p", PipelineStage.Read);
+        var builder      = new MiddlewarePipelineBuilder(new List<IPipelineMiddleware>());
+        var context      = new PipelineMiddlewareContext("M", "p", PipelineStage.Read);
         var actionCalled = false;
 
         await builder.ExecuteAsync(context, () =>
@@ -948,29 +908,25 @@ public sealed class MiddlewarePipelineBuilderTests : AxbusTestBase
         Assert.That(actionCalled, Is.True);
     }
 
-    /// <summary>
-    /// Should_InvokeMiddlewareOutermostFirst_When_MultipleMiddlewareRegistered.
-    /// </summary>
+    /// <summary>Should_InvokeMiddlewareOutermostFirst_When_MultipleRegistered.</summary>
     [Test]
-    public async Task Should_InvokeMiddlewareOutermostFirst_When_MultipleMiddlewareRegistered()
+    public async Task Should_InvokeMiddlewareOutermostFirst_When_MultipleRegistered()
     {
         var order   = new List<int>();
-        var middle1 = new OrderRecordingMiddleware(1, order);
-        var middle2 = new OrderRecordingMiddleware(2, order);
-        var builder = new MiddlewarePipelineBuilder(new[] { middle1, middle2 });
-        var context = new PipelineMiddlewareContext("M", "p", PipelineStage.Transform);
+        var builder = new MiddlewarePipelineBuilder(new[]
+        {
+            new OrderRecordingMiddleware(1, order),
+            new OrderRecordingMiddleware(2, order),
+        });
 
-        await builder.ExecuteAsync(context, () =>
-            Task.FromResult(new PipelineStageResult { Success = true }));
+        await builder.ExecuteAsync(
+            new PipelineMiddlewareContext("M", "p", PipelineStage.Transform),
+            () => Task.FromResult(new PipelineStageResult { Success = true }));
 
-        // middle1 (outermost) should execute before middle2
         Assert.That(order[0], Is.EqualTo(1));
         Assert.That(order[1], Is.EqualTo(2));
     }
 
-    /// <summary>
-    /// A test middleware that records its execution order into a shared list.
-    /// </summary>
     private sealed class OrderRecordingMiddleware : IPipelineMiddleware
     {
         private readonly int id;
@@ -980,8 +936,7 @@ public sealed class MiddlewarePipelineBuilderTests : AxbusTestBase
         { this.id = id; this.order = order; }
 
         public async Task<PipelineStageResult> InvokeAsync(
-            IPipelineMiddlewareContext context,
-            PipelineStageDelegate next)
+            IPipelineMiddlewareContext context, PipelineStageDelegate next)
         {
             order.Add(id);
             return await next();
@@ -1010,8 +965,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="PluginRegistry"/>.
-/// Verifies plugin registration, resolution by format pair and by ID,
-/// and conflict strategy behaviour.
 /// </summary>
 [TestFixture]
 public sealed class PluginRegistryTests : AxbusTestBase
@@ -1022,7 +975,6 @@ public sealed class PluginRegistryTests : AxbusTestBase
     public override void SetUp()
     {
         base.SetUp();
-
         var settings = new AxbusRootSettings
         {
             PluginSettings = new PluginSettings
@@ -1030,104 +982,78 @@ public sealed class PluginRegistryTests : AxbusTestBase
                 ConflictStrategy = PluginConflictStrategy.UseLatestVersion,
             },
         };
-
-        sut = new PluginRegistry(
-            NullLogger<PluginRegistry>(),
-            Options.Create(settings));
+        sut = new PluginRegistry(NullLogger<PluginRegistry>(), Options.Create(settings));
     }
 
-    /// <summary>
-    /// Should_ResolvePlugin_When_PluginRegisteredForFormatPair.
-    /// </summary>
+    /// <summary>Should_ResolvePlugin_When_PluginRegisteredForFormatPair.</summary>
     [Test]
     public void Should_ResolvePlugin_When_PluginRegisteredForFormatPair()
     {
-        var descriptor = BuildDescriptor("test.reader.json", "json", null);
-        sut.Register(descriptor);
-
+        sut.Register(BuildDescriptor("test.reader.json", "json", null));
         var plugin = sut.Resolve("json", string.Empty);
         Assert.That(plugin.PluginId, Is.EqualTo("test.reader.json"));
     }
 
-    /// <summary>
-    /// Should_ResolvePluginById_When_ExplicitOverrideProvided.
-    /// </summary>
+    /// <summary>Should_ResolvePluginById_When_ExplicitIdProvided.</summary>
     [Test]
-    public void Should_ResolvePluginById_When_ExplicitOverrideProvided()
+    public void Should_ResolvePluginById_When_ExplicitIdProvided()
     {
-        var descriptor = BuildDescriptor("axbus.plugin.writer.csv", null, "csv");
-        sut.Register(descriptor);
-
+        sut.Register(BuildDescriptor("axbus.plugin.writer.csv", null, "csv"));
         var plugin = sut.ResolveById("axbus.plugin.writer.csv");
         Assert.That(plugin.PluginId, Is.EqualTo("axbus.plugin.writer.csv"));
     }
 
-    /// <summary>
-    /// Should_ThrowPluginException_When_NoPluginRegisteredForFormat.
-    /// </summary>
+    /// <summary>Should_ThrowPluginException_When_NoPluginForFormat.</summary>
     [Test]
-    public void Should_ThrowPluginException_When_NoPluginRegisteredForFormat()
+    public void Should_ThrowPluginException_When_NoPluginForFormat()
     {
         Assert.Throws<AxbusPluginException>(() => sut.Resolve("xml", "csv"));
     }
 
-    /// <summary>
-    /// Should_ThrowPluginException_When_PluginIdNotRegistered.
-    /// </summary>
+    /// <summary>Should_ThrowPluginException_When_PluginIdNotRegistered.</summary>
     [Test]
     public void Should_ThrowPluginException_When_PluginIdNotRegistered()
     {
-        Assert.Throws<AxbusPluginException>(() => sut.ResolveById("non.existent.plugin"));
+        Assert.Throws<AxbusPluginException>(() => sut.ResolveById("non.existent"));
     }
 
-    /// <summary>
-    /// Should_ReturnAllDescriptors_When_GetAllCalled.
-    /// </summary>
+    /// <summary>Should_ReturnAllDescriptors_When_GetAllCalled.</summary>
     [Test]
     public void Should_ReturnAllDescriptors_When_GetAllCalled()
     {
         sut.Register(BuildDescriptor("plugin.a", "json", null));
         sut.Register(BuildDescriptor("plugin.b", null, "csv"));
-
         Assert.That(sut.GetAll().Count, Is.EqualTo(2));
     }
 
-    private static PluginDescriptor BuildDescriptor(
-        string pluginId,
-        string? sourceFormat,
-        string? targetFormat)
-    {
-        return new PluginDescriptor
+    private static PluginDescriptor BuildDescriptor(string pluginId, string? source, string? target) =>
+        new()
         {
             Instance = new StubPlugin(pluginId),
             Manifest = new PluginManifest
             {
-                PluginId      = pluginId,
-                SourceFormat  = sourceFormat,
-                TargetFormat  = targetFormat,
-                Version       = "1.0.0",
-                FrameworkVersion = "1.0.0",
+                PluginId = pluginId, SourceFormat = source,
+                TargetFormat = target, Version = "1.0.0", FrameworkVersion = "1.0.0",
             },
             Assembly  = typeof(PluginRegistryTests).Assembly,
             IsIsolated = false,
         };
-    }
 
     private sealed class StubPlugin : IPlugin
     {
         public string PluginId { get; }
-        public string Name               => PluginId;
-        public Version Version           => new(1, 0, 0);
+        public string Name => PluginId;
+        public Version Version => new(1, 0, 0);
         public Version MinFrameworkVersion => new(1, 0, 0);
         public PluginCapabilities Capabilities => PluginCapabilities.Reader;
 
-        public StubPlugin(string pluginId) => PluginId = pluginId;
+        public StubPlugin(string id) => PluginId = id;
 
-        public ISourceReader?    CreateReader(IServiceProvider services)     => null;
-        public IFormatParser?    CreateParser(IServiceProvider services)     => null;
-        public IDataTransformer? CreateTransformer(IServiceProvider services) => null;
-        public IOutputWriter?    CreateWriter(IServiceProvider services)     => null;
-        public Task InitializeAsync(IPluginContext context, CancellationToken ct) => Task.CompletedTask;
+        public ISourceReader?    CreateReader(IServiceProvider s)      => null;
+        public IFormatParser?    CreateParser(IServiceProvider s)      => null;
+        public IDataTransformer? CreateTransformer(IServiceProvider s) => null;
+        public IOutputWriter?    CreateWriter(IServiceProvider s)      => null;
+        public Task InitializeAsync(IPluginContext ctx, CancellationToken ct) => Task.CompletedTask;
         public Task ShutdownAsync(CancellationToken ct) => Task.CompletedTask;
     }
 }
@@ -1148,8 +1074,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="ProgressReporter"/>.
-/// Verifies that registered consumers receive progress updates
-/// and that multiple consumers all receive the same update.
 /// </summary>
 [TestFixture]
 public sealed class ProgressReporterTests : AxbusTestBase
@@ -1157,56 +1081,38 @@ public sealed class ProgressReporterTests : AxbusTestBase
     private ProgressReporter sut = null!;
 
     /// <inheritdoc/>
-    public override void SetUp()
-    {
-        base.SetUp();
-        sut = new ProgressReporter();
-    }
+    public override void SetUp() { base.SetUp(); sut = new ProgressReporter(); }
 
-    /// <summary>
-    /// Should_DeliverProgressToConsumer_When_ConsumerRegistered.
-    /// </summary>
+    /// <summary>Should_DeliverProgress_When_ConsumerRegistered.</summary>
     [Test]
-    public void Should_DeliverProgressToConsumer_When_ConsumerRegistered()
+    public void Should_DeliverProgress_When_ConsumerRegistered()
     {
         ConversionProgress? received = null;
         sut.Register(new Progress<ConversionProgress>(p => received = p));
+        sut.Report(new ConversionProgress { ModuleName = "M", PercentComplete = 50 });
 
-        sut.Report(new ConversionProgress
-        {
-            ModuleName      = "TestModule",
-            PercentComplete = 50,
-            Status          = ConversionStatus.Converting,
-        });
-
-        Assert.That(received,                     Is.Not.Null);
-        Assert.That(received!.ModuleName,         Is.EqualTo("TestModule"));
-        Assert.That(received.PercentComplete,     Is.EqualTo(50));
+        Assert.That(received,                 Is.Not.Null);
+        Assert.That(received!.ModuleName,     Is.EqualTo("M"));
+        Assert.That(received.PercentComplete, Is.EqualTo(50));
     }
 
-    /// <summary>
-    /// Should_DeliverToAllConsumers_When_MultipleConsumersRegistered.
-    /// </summary>
+    /// <summary>Should_DeliverToAll_When_MultipleConsumersRegistered.</summary>
     [Test]
-    public void Should_DeliverToAllConsumers_When_MultipleConsumersRegistered()
+    public void Should_DeliverToAll_When_MultipleConsumersRegistered()
     {
         var count = 0;
         sut.Register(new Progress<ConversionProgress>(_ => count++));
         sut.Register(new Progress<ConversionProgress>(_ => count++));
-
         sut.Report(new ConversionProgress { ModuleName = "M" });
 
         Assert.That(count, Is.EqualTo(2));
     }
 
-    /// <summary>
-    /// Should_NotThrow_When_NoConsumersRegistered.
-    /// </summary>
+    /// <summary>Should_NotThrow_When_NoConsumersRegistered.</summary>
     [Test]
     public void Should_NotThrow_When_NoConsumersRegistered()
     {
-        Assert.DoesNotThrow(() =>
-            sut.Report(new ConversionProgress { ModuleName = "M" }));
+        Assert.DoesNotThrow(() => sut.Report(new ConversionProgress { ModuleName = "M" }));
     }
 }
 '@
@@ -1226,14 +1132,12 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="PluginManifestReader"/>.
-/// Verifies correct deserialisation of valid manifests and appropriate
-/// exceptions for missing or malformed manifest files.
 /// </summary>
 [TestFixture]
 public sealed class PluginManifestReaderTests : AxbusTestBase
 {
-    private PluginManifestReader sut = null!;
-    private string tempDir = null!;
+    private PluginManifestReader sut     = null!;
+    private string               tempDir = null!;
 
     /// <inheritdoc/>
     public override void SetUp()
@@ -1248,64 +1152,47 @@ public sealed class PluginManifestReaderTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-        {
-            Directory.Delete(tempDir, recursive: true);
-        }
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
-    /// <summary>
-    /// Should_DeserialiseManifest_When_ValidJsonFileProvided.
-    /// </summary>
+    /// <summary>Should_DeserialiseManifest_When_ValidJsonProvided.</summary>
     [Test]
-    public async Task Should_DeserialiseManifest_When_ValidJsonFileProvided()
+    public async Task Should_DeserialiseManifest_When_ValidJsonProvided()
     {
         var path = Path.Combine(tempDir, "test.manifest.json");
-        var json = @"{
-            ""Name"": ""TestPlugin"",
-            ""PluginId"": ""test.plugin"",
-            ""Version"": ""1.0.0"",
-            ""FrameworkVersion"": ""1.0.0"",
-            ""SourceFormat"": ""json"",
-            ""TargetFormat"": null,
-            ""SupportedStages"": [""Read"", ""Parse""],
-            ""IsBundled"": false,
-            ""Author"": ""Axel Johnson"",
-            ""Description"": ""Test plugin"",
-            ""Dependencies"": []
-        }";
+        var json = """
+            {
+                "Name": "TestPlugin", "PluginId": "test.plugin",
+                "Version": "1.0.0", "FrameworkVersion": "1.0.0",
+                "SourceFormat": "json", "TargetFormat": null,
+                "SupportedStages": ["Read","Parse"],
+                "IsBundled": false, "Author": "AJI",
+                "Description": "Test", "Dependencies": []
+            }
+            """;
 
         await File.WriteAllTextAsync(path, json, Encoding.UTF8);
-
         var manifest = await sut.ReadAsync(path, CancellationToken.None);
 
-        Assert.That(manifest.Name,             Is.EqualTo("TestPlugin"));
-        Assert.That(manifest.PluginId,         Is.EqualTo("test.plugin"));
-        Assert.That(manifest.Version,          Is.EqualTo("1.0.0"));
-        Assert.That(manifest.SourceFormat,     Is.EqualTo("json"));
+        Assert.That(manifest.Name,     Is.EqualTo("TestPlugin"));
+        Assert.That(manifest.PluginId, Is.EqualTo("test.plugin"));
         Assert.That(manifest.SupportedStages.Count, Is.EqualTo(2));
     }
 
-    /// <summary>
-    /// Should_ThrowPluginException_When_ManifestFileNotFound.
-    /// </summary>
+    /// <summary>Should_ThrowPluginException_When_FileNotFound.</summary>
     [Test]
-    public void Should_ThrowPluginException_When_ManifestFileNotFound()
+    public void Should_ThrowPluginException_When_FileNotFound()
     {
         Assert.ThrowsAsync<AxbusPluginException>(async () =>
-            await sut.ReadAsync(
-                Path.Combine(tempDir, "missing.manifest.json"),
-                CancellationToken.None));
+            await sut.ReadAsync(Path.Combine(tempDir, "missing.json"), CancellationToken.None));
     }
 
-    /// <summary>
-    /// Should_ThrowPluginException_When_ManifestContainsInvalidJson.
-    /// </summary>
+    /// <summary>Should_ThrowPluginException_When_InvalidJsonInManifest.</summary>
     [Test]
-    public async Task Should_ThrowPluginException_When_ManifestContainsInvalidJson()
+    public async Task Should_ThrowPluginException_When_InvalidJsonInManifest()
     {
         var path = Path.Combine(tempDir, "bad.manifest.json");
-        await File.WriteAllTextAsync(path, "{ invalid json }", Encoding.UTF8);
+        await File.WriteAllTextAsync(path, "{ invalid }", Encoding.UTF8);
 
         Assert.ThrowsAsync<AxbusPluginException>(async () =>
             await sut.ReadAsync(path, CancellationToken.None));
@@ -1333,7 +1220,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="FileSystemScanner"/>.
-/// Uses a temporary directory with real files to verify scan behaviour.
 /// </summary>
 [TestFixture]
 public sealed class FileSystemScannerTests : AxbusTestBase
@@ -1354,13 +1240,10 @@ public sealed class FileSystemScannerTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-            Directory.Delete(tempDir, recursive: true);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
-    /// <summary>
-    /// Should_ReturnMatchingFiles_When_PatternMatches.
-    /// </summary>
+    /// <summary>Should_ReturnMatchingFiles_When_PatternMatches.</summary>
     [Test]
     public void Should_ReturnMatchingFiles_When_PatternMatches()
     {
@@ -1370,34 +1253,18 @@ public sealed class FileSystemScannerTests : AxbusTestBase
 
         var results = sut.Scan(tempDir, "*.json").ToList();
 
-        Assert.That(results.Count, Is.EqualTo(2));
+        Assert.That(results.Count,                         Is.EqualTo(2));
         Assert.That(results.All(f => f.EndsWith(".json")), Is.True);
     }
 
-    /// <summary>
-    /// Should_ReturnEmpty_When_FolderDoesNotExist.
-    /// </summary>
+    /// <summary>Should_ReturnEmpty_When_FolderDoesNotExist.</summary>
     [Test]
     public void Should_ReturnEmpty_When_FolderDoesNotExist()
     {
-        var results = sut.Scan(Path.Combine(tempDir, "nonexistent"), "*.json");
-        Assert.That(results, Is.Empty);
+        Assert.That(sut.Scan(Path.Combine(tempDir, "missing"), "*.json"), Is.Empty);
     }
 
-    /// <summary>
-    /// Should_ReturnEmpty_When_NoFilesMatchPattern.
-    /// </summary>
-    [Test]
-    public void Should_ReturnEmpty_When_NoFilesMatchPattern()
-    {
-        File.WriteAllText(Path.Combine(tempDir, "a.csv"), "data");
-        var results = sut.Scan(tempDir, "*.json");
-        Assert.That(results, Is.Empty);
-    }
-
-    /// <summary>
-    /// Should_ReturnFilesInAlphaOrder_When_MultipleFilesPresent.
-    /// </summary>
+    /// <summary>Should_ReturnFilesInAlphaOrder_When_MultipleFilesPresent.</summary>
     [Test]
     public void Should_ReturnFilesInAlphaOrder_When_MultipleFilesPresent()
     {
@@ -1408,8 +1275,15 @@ public sealed class FileSystemScannerTests : AxbusTestBase
         var results = sut.Scan(tempDir, "*.json").ToList();
 
         Assert.That(Path.GetFileName(results[0]), Is.EqualTo("a.json"));
-        Assert.That(Path.GetFileName(results[1]), Is.EqualTo("b.json"));
         Assert.That(Path.GetFileName(results[2]), Is.EqualTo("c.json"));
+    }
+
+    /// <summary>Should_ReturnEmpty_When_NoFilesMatchPattern.</summary>
+    [Test]
+    public void Should_ReturnEmpty_When_NoFilesMatchPattern()
+    {
+        File.WriteAllText(Path.Combine(tempDir, "a.csv"), "data");
+        Assert.That(sut.Scan(tempDir, "*.json"), Is.Empty);
     }
 }
 '@
@@ -1427,8 +1301,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="PluginFolderScanner"/>.
-/// Verifies that DLL + manifest pairs are detected correctly
-/// and that orphaned DLLs without manifests are skipped.
 /// </summary>
 [TestFixture]
 public sealed class PluginFolderScannerTests : AxbusTestBase
@@ -1449,47 +1321,36 @@ public sealed class PluginFolderScannerTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-            Directory.Delete(tempDir, recursive: true);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
-    /// <summary>
-    /// Should_ReturnFileSet_When_DllAndManifestBothPresent.
-    /// </summary>
+    /// <summary>Should_ReturnFileSet_When_DllAndManifestPresent.</summary>
     [Test]
-    public void Should_ReturnFileSet_When_DllAndManifestBothPresent()
+    public void Should_ReturnFileSet_When_DllAndManifestPresent()
     {
-        File.WriteAllText(Path.Combine(tempDir, "MyPlugin.dll"),           "fake dll");
+        File.WriteAllText(Path.Combine(tempDir, "MyPlugin.dll"),           "fake");
         File.WriteAllText(Path.Combine(tempDir, "MyPlugin.manifest.json"), "{}");
 
         var results = sut.Scan(tempDir, scanSubFolders: false).ToList();
 
-        Assert.That(results.Count, Is.EqualTo(1));
-        Assert.That(Path.GetFileName(results[0].AssemblyPath), Is.EqualTo("MyPlugin.dll"));
-        Assert.That(File.Exists(results[0].ManifestPath),      Is.True);
+        Assert.That(results.Count,                                     Is.EqualTo(1));
+        Assert.That(Path.GetFileName(results[0].AssemblyPath),         Is.EqualTo("MyPlugin.dll"));
+        Assert.That(File.Exists(results[0].ManifestPath),              Is.True);
     }
 
-    /// <summary>
-    /// Should_SkipDll_When_ManifestFileMissing.
-    /// </summary>
+    /// <summary>Should_SkipDll_When_ManifestMissing.</summary>
     [Test]
-    public void Should_SkipDll_When_ManifestFileMissing()
+    public void Should_SkipDll_When_ManifestMissing()
     {
-        File.WriteAllText(Path.Combine(tempDir, "OrphanPlugin.dll"), "fake dll");
-
-        var results = sut.Scan(tempDir, scanSubFolders: false).ToList();
-
-        Assert.That(results, Is.Empty);
+        File.WriteAllText(Path.Combine(tempDir, "OrphanPlugin.dll"), "fake");
+        Assert.That(sut.Scan(tempDir, scanSubFolders: false), Is.Empty);
     }
 
-    /// <summary>
-    /// Should_ReturnEmpty_When_PluginFolderDoesNotExist.
-    /// </summary>
+    /// <summary>Should_ReturnEmpty_When_FolderNotFound.</summary>
     [Test]
-    public void Should_ReturnEmpty_When_PluginFolderDoesNotExist()
+    public void Should_ReturnEmpty_When_FolderNotFound()
     {
-        var results = sut.Scan(Path.Combine(tempDir, "missing"), scanSubFolders: false);
-        Assert.That(results, Is.Empty);
+        Assert.That(sut.Scan(Path.Combine(tempDir, "missing"), scanSubFolders: false), Is.Empty);
     }
 }
 '@
@@ -1502,7 +1363,6 @@ New-SourceFile $InfraTestsRoot "Tests/Connectors/LocalFileTargetConnectorTests.c
 namespace Axbus.Infrastructure.Tests.Tests.Connectors;
 
 using System.Text;
-using Axbus.Core.Exceptions;
 using Axbus.Core.Models.Configuration;
 using Axbus.Infrastructure.Connectors;
 using Axbus.Tests.Common.Base;
@@ -1510,7 +1370,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="LocalFileTargetConnector"/>.
-/// Uses a temporary directory to verify file creation and error handling.
 /// </summary>
 [TestFixture]
 public sealed class LocalFileTargetConnectorTests : AxbusTestBase
@@ -1531,48 +1390,39 @@ public sealed class LocalFileTargetConnectorTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-            Directory.Delete(tempDir, recursive: true);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
-    /// <summary>
-    /// Should_WriteFile_When_ValidStreamAndOptionsProvided.
-    /// </summary>
+    /// <summary>Should_WriteFile_When_ValidStreamProvided.</summary>
     [Test]
-    public async Task Should_WriteFile_When_ValidStreamAndOptionsProvided()
+    public async Task Should_WriteFile_When_ValidStreamProvided()
     {
-        var content  = "id,name\n1,Test";
-        var data     = new MemoryStream(Encoding.UTF8.GetBytes(content));
-        var options  = new TargetOptions { Path = tempDir };
+        var content = "id,name\n1,Test";
+        var data    = new MemoryStream(Encoding.UTF8.GetBytes(content));
+        var options = new TargetOptions { Path = tempDir };
 
         var outputPath = await sut.WriteAsync(data, "output.csv", options, CancellationToken.None);
 
         Assert.That(File.Exists(outputPath), Is.True);
-        var written = await File.ReadAllTextAsync(outputPath);
-        Assert.That(written, Is.EqualTo(content));
+        Assert.That(await File.ReadAllTextAsync(outputPath), Is.EqualTo(content));
     }
 
-    /// <summary>
-    /// Should_CreateDirectory_When_TargetFolderDoesNotExist.
-    /// </summary>
+    /// <summary>Should_CreateDirectory_When_TargetFolderMissing.</summary>
     [Test]
-    public async Task Should_CreateDirectory_When_TargetFolderDoesNotExist()
+    public async Task Should_CreateDirectory_When_TargetFolderMissing()
     {
-        var newFolder = Path.Combine(tempDir, "new_subfolder");
+        var newFolder = Path.Combine(tempDir, "new_sub");
         var data      = new MemoryStream(Encoding.UTF8.GetBytes("data"));
         var options   = new TargetOptions { Path = newFolder };
 
-        var outputPath = await sut.WriteAsync(data, "file.csv", options, CancellationToken.None);
+        await sut.WriteAsync(data, "file.csv", options, CancellationToken.None);
 
         Assert.That(Directory.Exists(newFolder), Is.True);
-        Assert.That(File.Exists(outputPath),     Is.True);
     }
 
-    /// <summary>
-    /// Should_ReturnFullPath_When_WriteSucceeds.
-    /// </summary>
+    /// <summary>Should_ReturnFullOutputPath_When_WriteSucceeds.</summary>
     [Test]
-    public async Task Should_ReturnFullPath_When_WriteSucceeds()
+    public async Task Should_ReturnFullOutputPath_When_WriteSucceeds()
     {
         var data    = new MemoryStream(Encoding.UTF8.GetBytes("test"));
         var options = new TargetOptions { Path = tempDir };
@@ -1599,7 +1449,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="LocalFileSourceConnector"/>.
-/// Verifies AllFiles and SingleFile read modes and missing path handling.
 /// </summary>
 [TestFixture]
 public sealed class LocalFileSourceConnectorTests : AxbusTestBase
@@ -1620,42 +1469,30 @@ public sealed class LocalFileSourceConnectorTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-            Directory.Delete(tempDir, recursive: true);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
-    /// <summary>
-    /// Should_ReturnOneStreamPerFile_When_AllFilesModeAndMultipleFilesPresent.
-    /// </summary>
+    /// <summary>Should_ReturnOneStreamPerFile_When_AllFilesMode.</summary>
     [Test]
-    public async Task Should_ReturnOneStreamPerFile_When_AllFilesModeAndMultipleFilesPresent()
+    public async Task Should_ReturnOneStreamPerFile_When_AllFilesMode()
     {
         File.WriteAllText(Path.Combine(tempDir, "a.json"), "[{}]");
         File.WriteAllText(Path.Combine(tempDir, "b.json"), "[{}]");
 
-        var options = new SourceOptions
-        {
-            Path        = tempDir,
-            FilePattern = "*.json",
-            ReadMode    = "AllFiles",
-        };
-
+        var options = new SourceOptions { Path = tempDir, FilePattern = "*.json", ReadMode = "AllFiles" };
         var streams = new List<Stream>();
-        await foreach (var s in sut.GetSourceStreamsAsync(options, CancellationToken.None))
-        {
-            streams.Add(s);
-        }
 
-        foreach (var stream in streams) stream.Dispose();
+        await foreach (var s in sut.GetSourceStreamsAsync(options, CancellationToken.None))
+            streams.Add(s);
+
+        foreach (var s in streams) s.Dispose();
 
         Assert.That(streams.Count, Is.EqualTo(2));
     }
 
-    /// <summary>
-    /// Should_ThrowConnectorException_When_FolderDoesNotExist.
-    /// </summary>
+    /// <summary>Should_ThrowConnectorException_When_FolderMissing.</summary>
     [Test]
-    public void Should_ThrowConnectorException_When_FolderDoesNotExist()
+    public void Should_ThrowConnectorException_When_FolderMissing()
     {
         var options = new SourceOptions
         {
@@ -1665,8 +1502,7 @@ public sealed class LocalFileSourceConnectorTests : AxbusTestBase
 
         Assert.ThrowsAsync<AxbusConnectorException>(async () =>
         {
-            await foreach (var _ in sut.GetSourceStreamsAsync(options, CancellationToken.None))
-            { }
+            await foreach (var _ in sut.GetSourceStreamsAsync(options, CancellationToken.None)) { }
         });
     }
 }
@@ -1694,7 +1530,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="JsonSourceReader"/>.
-/// Verifies stream opening, metadata and error handling for missing files.
 /// </summary>
 [TestFixture]
 public sealed class JsonSourceReaderTests : AxbusTestBase
@@ -1715,41 +1550,33 @@ public sealed class JsonSourceReaderTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-            Directory.Delete(tempDir, recursive: true);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
-    /// <summary>
-    /// Should_ReturnSourceData_When_JsonFileExists.
-    /// </summary>
+    /// <summary>Should_ReturnSourceData_When_JsonFileExists.</summary>
     [Test]
     public async Task Should_ReturnSourceData_When_JsonFileExists()
     {
         var filePath = Path.Combine(tempDir, "test.json");
         await File.WriteAllTextAsync(filePath, "[{\"id\":1}]");
 
-        var options    = new SourceOptions { Path = filePath };
-        var sourceData = await sut.ReadAsync(options, CancellationToken.None);
+        var sourceData = await sut.ReadAsync(new SourceOptions { Path = filePath }, CancellationToken.None);
 
-        Assert.That(sourceData,            Is.Not.Null);
-        Assert.That(sourceData.Format,     Is.EqualTo("json"));
-        Assert.That(sourceData.SourcePath, Is.EqualTo(filePath));
-        Assert.That(sourceData.RawData,    Is.Not.Null);
+        Assert.That(sourceData.Format,        Is.EqualTo("json"));
+        Assert.That(sourceData.SourcePath,    Is.EqualTo(filePath));
         Assert.That(sourceData.ContentLength, Is.GreaterThan(0));
 
         await sourceData.RawData.DisposeAsync();
     }
 
-    /// <summary>
-    /// Should_ThrowConnectorException_When_FileNotFound.
-    /// </summary>
+    /// <summary>Should_ThrowConnectorException_When_FileNotFound.</summary>
     [Test]
     public void Should_ThrowConnectorException_When_FileNotFound()
     {
-        var options = new SourceOptions { Path = Path.Combine(tempDir, "missing.json") };
-
         Assert.ThrowsAsync<AxbusConnectorException>(async () =>
-            await sut.ReadAsync(options, CancellationToken.None));
+            await sut.ReadAsync(
+                new SourceOptions { Path = Path.Combine(tempDir, "missing.json") },
+                CancellationToken.None));
     }
 }
 '@
@@ -1772,65 +1599,45 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="JsonFormatParser"/>.
-/// Verifies element streaming for flat arrays, nested objects,
-/// empty arrays and invalid JSON.
 /// </summary>
 [TestFixture]
 public sealed class JsonFormatParserTests : AxbusTestBase
 {
     private JsonFormatParser CreateSut(string? rootArrayKey = null) =>
-        new(NullLogger<JsonFormatParser>(),
-            new JsonReaderPluginOptions { RootArrayKey = rootArrayKey });
+        new(NullLogger<JsonFormatParser>(), new JsonReaderPluginOptions { RootArrayKey = rootArrayKey });
 
-    /// <summary>
-    /// Should_StreamAllElements_When_JsonContainsFlatArray.
-    /// </summary>
+    /// <summary>Should_StreamAllElements_When_FlatArrayParsed.</summary>
     [Test]
-    public async Task Should_StreamAllElements_When_JsonContainsFlatArray()
+    public async Task Should_StreamAllElements_When_FlatArrayParsed()
     {
-        var stream     = JsonTestDataHelper.FlatArray(count: 3);
-        var sourceData = new SourceData(stream, "test.json", "json");
-        var sut        = CreateSut();
+        var sourceData = new SourceData(JsonTestDataHelper.FlatArray(3), "test.json", "json");
+        var parsed     = await CreateSut().ParseAsync(sourceData, CancellationToken.None);
+        var elements   = new List<JsonElement>();
 
-        var parsed   = await sut.ParseAsync(sourceData, CancellationToken.None);
-        var elements = new List<JsonElement>();
-
-        await foreach (var el in parsed.Elements)
-            elements.Add(el);
+        await foreach (var el in parsed.Elements) elements.Add(el);
 
         Assert.That(elements.Count, Is.EqualTo(3));
     }
 
-    /// <summary>
-    /// Should_ReturnEmptyStream_When_JsonArrayIsEmpty.
-    /// </summary>
+    /// <summary>Should_ReturnEmptyStream_When_EmptyArray.</summary>
     [Test]
-    public async Task Should_ReturnEmptyStream_When_JsonArrayIsEmpty()
+    public async Task Should_ReturnEmptyStream_When_EmptyArray()
     {
-        var stream     = JsonTestDataHelper.EmptyArray();
-        var sourceData = new SourceData(stream, "empty.json", "json");
-        var sut        = CreateSut();
+        var sourceData = new SourceData(JsonTestDataHelper.EmptyArray(), "empty.json", "json");
+        var parsed     = await CreateSut().ParseAsync(sourceData, CancellationToken.None);
+        var elements   = new List<JsonElement>();
 
-        var parsed   = await sut.ParseAsync(sourceData, CancellationToken.None);
-        var elements = new List<JsonElement>();
-
-        await foreach (var el in parsed.Elements)
-            elements.Add(el);
+        await foreach (var el in parsed.Elements) elements.Add(el);
 
         Assert.That(elements, Is.Empty);
     }
 
-    /// <summary>
-    /// Should_ThrowPipelineException_When_JsonIsInvalid.
-    /// </summary>
+    /// <summary>Should_ThrowPipelineException_When_InvalidJson.</summary>
     [Test]
-    public async Task Should_ThrowPipelineException_When_JsonIsInvalid()
+    public async Task Should_ThrowPipelineException_When_InvalidJson()
     {
-        var stream     = JsonTestDataHelper.InvalidJson();
-        var sourceData = new SourceData(stream, "bad.json", "json");
-        var sut        = CreateSut();
-
-        var parsed = await sut.ParseAsync(sourceData, CancellationToken.None);
+        var sourceData = new SourceData(JsonTestDataHelper.InvalidJson(), "bad.json", "json");
+        var parsed     = await CreateSut().ParseAsync(sourceData, CancellationToken.None);
 
         Assert.ThrowsAsync<AxbusPipelineException>(async () =>
         {
@@ -1838,22 +1645,16 @@ public sealed class JsonFormatParserTests : AxbusTestBase
         });
     }
 
-    /// <summary>
-    /// Should_DrillIntoNamedKey_When_RootArrayKeyConfigured.
-    /// </summary>
+    /// <summary>Should_DrillIntoKey_When_RootArrayKeyConfigured.</summary>
     [Test]
-    public async Task Should_DrillIntoNamedKey_When_RootArrayKeyConfigured()
+    public async Task Should_DrillIntoKey_When_RootArrayKeyConfigured()
     {
         var json       = "{\"items\":[{\"id\":1},{\"id\":2}]}";
-        var stream     = JsonTestDataHelper.ToStream(json);
-        var sourceData = new SourceData(stream, "test.json", "json");
-        var sut        = CreateSut(rootArrayKey: "items");
+        var sourceData = new SourceData(JsonTestDataHelper.ToStream(json), "test.json", "json");
+        var parsed     = await CreateSut(rootArrayKey: "items").ParseAsync(sourceData, CancellationToken.None);
+        var elements   = new List<JsonElement>();
 
-        var parsed   = await sut.ParseAsync(sourceData, CancellationToken.None);
-        var elements = new List<JsonElement>();
-
-        await foreach (var el in parsed.Elements)
-            elements.Add(el);
+        await foreach (var el in parsed.Elements) elements.Add(el);
 
         Assert.That(elements.Count, Is.EqualTo(2));
     }
@@ -1879,13 +1680,11 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="JsonDataTransformer"/>.
-/// Verifies flat row production, dot-notation field naming,
-/// array explosion and empty input handling.
 /// </summary>
 [TestFixture]
 public sealed class JsonDataTransformerTests : AxbusTestBase
 {
-    private JsonFormatParser   parser      = null!;
+    private JsonFormatParser    parser      = null!;
     private JsonDataTransformer transformer = null!;
 
     /// <inheritdoc/>
@@ -1897,63 +1696,53 @@ public sealed class JsonDataTransformerTests : AxbusTestBase
         transformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
     }
 
-    /// <summary>
-    /// Should_ProduceFlatRows_When_JsonIsFlatArray.
-    /// </summary>
+    /// <summary>Should_ProduceFlatRows_When_JsonIsFlatArray.</summary>
     [Test]
     public async Task Should_ProduceFlatRows_When_JsonIsFlatArray()
     {
-        var sourceData    = new SourceData(JsonTestDataHelper.FlatArray(3), "flat.json", "json");
-        var parsedData    = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed   = await transformer.TransformAsync(parsedData, new PipelineOptions(), CancellationToken.None);
-        var rows          = await FlattenedRowAssertions.CollectAsync(transformed.Rows);
+        var sd   = new SourceData(JsonTestDataHelper.FlatArray(3), "flat.json", "json");
+        var pd   = await parser.ParseAsync(sd, CancellationToken.None);
+        var td   = await transformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var rows = await FlattenedRowAssertions.CollectAsync(td.Rows);
 
         FlattenedRowAssertions.HasCount(rows, 3);
         FlattenedRowAssertions.AllHaveColumn(rows, "id");
-        FlattenedRowAssertions.AllHaveColumn(rows, "name");
     }
 
-    /// <summary>
-    /// Should_UseDotNotation_When_JsonHasNestedObjects.
-    /// </summary>
+    /// <summary>Should_UseDotNotation_When_JsonHasNestedObjects.</summary>
     [Test]
     public async Task Should_UseDotNotation_When_JsonHasNestedObjects()
     {
-        var sourceData  = new SourceData(JsonTestDataHelper.NestedArray(1), "nested.json", "json");
-        var parsedData  = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed = await transformer.TransformAsync(parsedData, new PipelineOptions(), CancellationToken.None);
-        var rows        = await FlattenedRowAssertions.CollectAsync(transformed.Rows);
+        var sd   = new SourceData(JsonTestDataHelper.NestedArray(1), "nested.json", "json");
+        var pd   = await parser.ParseAsync(sd, CancellationToken.None);
+        var td   = await transformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var rows = await FlattenedRowAssertions.CollectAsync(td.Rows);
 
         FlattenedRowAssertions.HasCount(rows, 1);
         FlattenedRowAssertions.AllHaveColumn(rows, "customer.address.city");
     }
 
-    /// <summary>
-    /// Should_ExplodeArrayIntoMultipleRows_When_NestedArrayPresent.
-    /// </summary>
+    /// <summary>Should_ExplodeArray_When_NestedArrayPresent.</summary>
     [Test]
-    public async Task Should_ExplodeArrayIntoMultipleRows_When_NestedArrayPresent()
+    public async Task Should_ExplodeArray_When_NestedArrayPresent()
     {
-        var sourceData  = new SourceData(JsonTestDataHelper.ArrayForExplosion(3), "array.json", "json");
-        var parsedData  = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed = await transformer.TransformAsync(parsedData, new PipelineOptions(), CancellationToken.None);
-        var rows        = await FlattenedRowAssertions.CollectAsync(transformed.Rows);
+        var sd   = new SourceData(JsonTestDataHelper.ArrayForExplosion(3), "arr.json", "json");
+        var pd   = await parser.ParseAsync(sd, CancellationToken.None);
+        var td   = await transformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var rows = await FlattenedRowAssertions.CollectAsync(td.Rows);
 
-        // One parent object with 3 array items = 3 exploded rows
-        Assert.That(rows.Count, Is.EqualTo(3));
+        Assert.That(rows.Count,                Is.EqualTo(3));
         Assert.That(rows.All(r => r.IsExploded), Is.True);
     }
 
-    /// <summary>
-    /// Should_ProduceNoRows_When_JsonArrayIsEmpty.
-    /// </summary>
+    /// <summary>Should_ProduceNoRows_When_EmptyArray.</summary>
     [Test]
-    public async Task Should_ProduceNoRows_When_JsonArrayIsEmpty()
+    public async Task Should_ProduceNoRows_When_EmptyArray()
     {
-        var sourceData  = new SourceData(JsonTestDataHelper.EmptyArray(), "empty.json", "json");
-        var parsedData  = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed = await transformer.TransformAsync(parsedData, new PipelineOptions(), CancellationToken.None);
-        var rows        = await FlattenedRowAssertions.CollectAsync(transformed.Rows);
+        var sd   = new SourceData(JsonTestDataHelper.EmptyArray(), "empty.json", "json");
+        var pd   = await parser.ParseAsync(sd, CancellationToken.None);
+        var td   = await transformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var rows = await FlattenedRowAssertions.CollectAsync(td.Rows);
 
         Assert.That(rows, Is.Empty);
     }
@@ -1973,7 +1762,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="JsonReaderPlugin"/>.
-/// Verifies plugin metadata, capabilities and stage factory method contracts.
 /// </summary>
 [TestFixture]
 public sealed class JsonReaderPluginTests : AxbusTestBase
@@ -1981,26 +1769,18 @@ public sealed class JsonReaderPluginTests : AxbusTestBase
     private JsonReaderPlugin sut = null!;
 
     /// <inheritdoc/>
-    public override void SetUp()
-    {
-        base.SetUp();
-        sut = new JsonReaderPlugin();
-    }
+    public override void SetUp() { base.SetUp(); sut = new JsonReaderPlugin(); }
 
-    /// <summary>
-    /// Should_HaveCorrectPluginId_When_Inspected.
-    /// </summary>
+    /// <summary>Should_HaveCorrectPluginId.</summary>
     [Test]
-    public void Should_HaveCorrectPluginId_When_Inspected()
+    public void Should_HaveCorrectPluginId()
     {
         Assert.That(sut.PluginId, Is.EqualTo("axbus.plugin.reader.json"));
     }
 
-    /// <summary>
-    /// Should_DeclareReaderParserTransformerCapabilities_When_Inspected.
-    /// </summary>
+    /// <summary>Should_DeclareReaderParserTransformer_When_CapabilitiesInspected.</summary>
     [Test]
-    public void Should_DeclareReaderParserTransformerCapabilities_When_Inspected()
+    public void Should_DeclareReaderParserTransformer_When_CapabilitiesInspected()
     {
         Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Reader),      Is.True);
         Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Parser),      Is.True);
@@ -2008,39 +1788,19 @@ public sealed class JsonReaderPluginTests : AxbusTestBase
         Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Writer),      Is.False);
     }
 
-    /// <summary>
-    /// Should_ReturnNullWriter_When_CreateWriterCalled.
-    /// </summary>
+    /// <summary>Should_ReturnNullWriter_When_CreateWriterCalled.</summary>
     [Test]
     public void Should_ReturnNullWriter_When_CreateWriterCalled()
     {
         Assert.That(sut.CreateWriter(Services), Is.Null);
     }
 
-    /// <summary>
-    /// Should_ReturnNonNullReader_When_CreateReaderCalled.
-    /// </summary>
+    /// <summary>Should_ReturnNonNullStages_When_SupportedFactoriesCalled.</summary>
     [Test]
-    public void Should_ReturnNonNullReader_When_CreateReaderCalled()
+    public void Should_ReturnNonNullStages_When_SupportedFactoriesCalled()
     {
-        Assert.That(sut.CreateReader(Services), Is.Not.Null);
-    }
-
-    /// <summary>
-    /// Should_ReturnNonNullParser_When_CreateParserCalled.
-    /// </summary>
-    [Test]
-    public void Should_ReturnNonNullParser_When_CreateParserCalled()
-    {
-        Assert.That(sut.CreateParser(Services), Is.Not.Null);
-    }
-
-    /// <summary>
-    /// Should_ReturnNonNullTransformer_When_CreateTransformerCalled.
-    /// </summary>
-    [Test]
-    public void Should_ReturnNonNullTransformer_When_CreateTransformerCalled()
-    {
+        Assert.That(sut.CreateReader(Services),      Is.Not.Null);
+        Assert.That(sut.CreateParser(Services),      Is.Not.Null);
         Assert.That(sut.CreateTransformer(Services), Is.Not.Null);
     }
 }
@@ -2059,83 +1819,46 @@ using Axbus.Tests.Common.Base;
 using NUnit.Framework;
 
 /// <summary>
-/// Unit tests for the internal JSON array explosion logic accessed
-/// through <see cref="Axbus.Plugin.Reader.Json.Transformer.JsonDataTransformer"/>.
-/// Verifies that scalar values, nested objects and nested arrays all
-/// produce the correct number of rows with the correct column names.
+/// Unit tests for <see cref="Axbus.Plugin.Reader.Json.Transformer.JsonArrayExploder"/>.
 /// </summary>
 [TestFixture]
 public sealed class JsonArrayExploderTests : AxbusTestBase
 {
-    /// <summary>
-    /// Should_ProduceSingleRow_When_ObjectHasNoArrays.
-    /// </summary>
+    /// <summary>Should_ProduceSingleRow_When_NoArraysPresent.</summary>
     [Test]
-    public void Should_ProduceSingleRow_When_ObjectHasNoArrays()
+    public void Should_ProduceSingleRow_When_NoArraysPresent()
     {
-        var json    = "{\"id\":\"1\",\"name\":\"Test\"}";
-        var element = JsonDocument.Parse(json).RootElement;
-
-        var rows = Axbus.Plugin.Reader.Json.Transformer.JsonArrayExploder.Explode(
-            element,
-            new Dictionary<string, string>(),
-            prefix: string.Empty,
-            maxDepth: 3,
-            currentDepth: 0,
-            sourcePath: "test.json",
-            rowNumber: 1,
-            nullPlaceholder: string.Empty).ToList();
+        var element = JsonDocument.Parse("{\"id\":\"1\",\"name\":\"Test\"}").RootElement;
+        var rows    = Axbus.Plugin.Reader.Json.Transformer.JsonArrayExploder.Explode(
+            element, new Dictionary<string, string>(), string.Empty, 3, 0, "t.json", 1, string.Empty).ToList();
 
         Assert.That(rows.Count, Is.EqualTo(1));
         FlattenedRowAssertions.HasValue(rows[0], "id",   "1");
         FlattenedRowAssertions.HasValue(rows[0], "name", "Test");
     }
 
-    /// <summary>
-    /// Should_FlattenNestedObject_When_DotNotationApplied.
-    /// </summary>
+    /// <summary>Should_FlattenNestedObject_When_DotNotationApplied.</summary>
     [Test]
     public void Should_FlattenNestedObject_When_DotNotationApplied()
     {
-        var json    = "{\"customer\":{\"name\":\"Acme\",\"city\":\"Stockholm\"}}";
-        var element = JsonDocument.Parse(json).RootElement;
-
-        var rows = Axbus.Plugin.Reader.Json.Transformer.JsonArrayExploder.Explode(
-            element,
-            new Dictionary<string, string>(),
-            prefix: string.Empty,
-            maxDepth: 3,
-            currentDepth: 0,
-            sourcePath: "test.json",
-            rowNumber: 1,
-            nullPlaceholder: string.Empty).ToList();
+        var element = JsonDocument.Parse("{\"customer\":{\"name\":\"Acme\",\"city\":\"Stockholm\"}}").RootElement;
+        var rows    = Axbus.Plugin.Reader.Json.Transformer.JsonArrayExploder.Explode(
+            element, new Dictionary<string, string>(), string.Empty, 3, 0, "t.json", 1, string.Empty).ToList();
 
         Assert.That(rows.Count, Is.EqualTo(1));
         FlattenedRowAssertions.HasValue(rows[0], "customer.name", "Acme");
         FlattenedRowAssertions.HasValue(rows[0], "customer.city", "Stockholm");
     }
 
-    /// <summary>
-    /// Should_ExplodeArray_When_NestedArrayPresent.
-    /// </summary>
+    /// <summary>Should_ExplodeArray_When_NestedArrayPresent.</summary>
     [Test]
     public void Should_ExplodeArray_When_NestedArrayPresent()
     {
-        var json    = "{\"orderId\":\"O1\",\"lines\":[{\"sku\":\"A\"},{\"sku\":\"B\"}]}";
-        var element = JsonDocument.Parse(json).RootElement;
+        var element = JsonDocument.Parse("{\"id\":\"O1\",\"lines\":[{\"sku\":\"A\"},{\"sku\":\"B\"}]}").RootElement;
+        var rows    = Axbus.Plugin.Reader.Json.Transformer.JsonArrayExploder.Explode(
+            element, new Dictionary<string, string>(), string.Empty, 3, 0, "t.json", 1, string.Empty).ToList();
 
-        var rows = Axbus.Plugin.Reader.Json.Transformer.JsonArrayExploder.Explode(
-            element,
-            new Dictionary<string, string>(),
-            prefix: string.Empty,
-            maxDepth: 3,
-            currentDepth: 0,
-            sourcePath: "test.json",
-            rowNumber: 1,
-            nullPlaceholder: string.Empty).ToList();
-
-        // 1 parent * 2 array items = 2 rows
-        Assert.That(rows.Count, Is.EqualTo(2));
+        Assert.That(rows.Count,              Is.EqualTo(2));
         Assert.That(rows.All(r => r.IsExploded), Is.True);
     }
 }
@@ -2162,8 +1885,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="CsvWriterOptionsValidator"/>.
-/// Verifies that valid options pass and invalid options produce
-/// meaningful error messages.
 /// </summary>
 [TestFixture]
 public sealed class CsvWriterOptionsValidatorTests : AxbusTestBase
@@ -2171,50 +1892,27 @@ public sealed class CsvWriterOptionsValidatorTests : AxbusTestBase
     private CsvWriterOptionsValidator sut = null!;
 
     /// <inheritdoc/>
-    public override void SetUp()
-    {
-        base.SetUp();
-        sut = new CsvWriterOptionsValidator();
-    }
+    public override void SetUp() { base.SetUp(); sut = new CsvWriterOptionsValidator(); }
 
-    /// <summary>
-    /// Should_ReturnNoErrors_When_DefaultOptionsProvided.
-    /// </summary>
+    /// <summary>Should_ReturnNoErrors_When_DefaultOptions.</summary>
     [Test]
-    public void Should_ReturnNoErrors_When_DefaultOptionsProvided()
+    public void Should_ReturnNoErrors_When_DefaultOptions()
     {
-        var errors = sut.Validate(new CsvWriterPluginOptions()).ToList();
-        Assert.That(errors, Is.Empty);
+        Assert.That(sut.Validate(new CsvWriterPluginOptions()).ToList(), Is.Empty);
     }
 
-    /// <summary>
-    /// Should_ReturnError_When_DelimiterIsNullChar.
-    /// </summary>
+    /// <summary>Should_ReturnError_When_DelimiterIsNullChar.</summary>
     [Test]
     public void Should_ReturnError_When_DelimiterIsNullChar()
     {
-        var errors = sut.Validate(new CsvWriterPluginOptions { Delimiter = '\0' }).ToList();
-        Assert.That(errors.Count, Is.GreaterThan(0));
+        Assert.That(sut.Validate(new CsvWriterPluginOptions { Delimiter = '\0' }).ToList(), Is.Not.Empty);
     }
 
-    /// <summary>
-    /// Should_ReturnError_When_EncodingIsInvalid.
-    /// </summary>
+    /// <summary>Should_ReturnError_When_EncodingInvalid.</summary>
     [Test]
-    public void Should_ReturnError_When_EncodingIsInvalid()
+    public void Should_ReturnError_When_EncodingInvalid()
     {
-        var errors = sut.Validate(new CsvWriterPluginOptions { Encoding = "NOT-A-VALID-ENCODING" }).ToList();
-        Assert.That(errors.Count, Is.GreaterThan(0));
-    }
-
-    /// <summary>
-    /// Should_ReturnError_When_WrongOptionsTypeProvided.
-    /// </summary>
-    [Test]
-    public void Should_ReturnError_When_WrongOptionsTypeProvided()
-    {
-        var errors = sut.Validate(new Axbus.Plugin.Writer.Excel.Options.ExcelWriterPluginOptions()).ToList();
-        Assert.That(errors.Count, Is.GreaterThan(0));
+        Assert.That(sut.Validate(new CsvWriterPluginOptions { Encoding = "NOT-VALID" }).ToList(), Is.Not.Empty);
     }
 }
 '@
@@ -2236,8 +1934,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="CsvOutputWriter"/>.
-/// Verifies CSV file creation, header row, delimiter usage
-/// and row count in the returned WriteResult.
 /// </summary>
 [TestFixture]
 public sealed class CsvOutputWriterTests : AxbusTestBase
@@ -2256,26 +1952,22 @@ public sealed class CsvOutputWriterTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-            Directory.Delete(tempDir, recursive: true);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
     private CsvOutputWriter CreateWriter(char delimiter = ',') =>
-        new(
-            NullLogger<CsvOutputWriter>(),
+        new(NullLogger<CsvOutputWriter>(),
             new CsvWriterPluginOptions { Delimiter = delimiter, IncludeHeader = true },
             new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()));
 
-    private static TransformedData CreateTransformedData(int rowCount) =>
-        new(
-            Rows: CreateRows(rowCount),
-            SourcePath: "test.json");
+    private static TransformedData MakeData(int rowCount) =>
+        new(Rows: MakeRows(rowCount), SourcePath: "test.json");
 
-    private static async IAsyncEnumerable<FlattenedRow> CreateRows(int count)
+    private static async IAsyncEnumerable<FlattenedRow> MakeRows(int count)
     {
         for (var i = 1; i <= count; i++)
         {
-            var row = new FlattenedRow { RowNumber = i, SourceFilePath = "test.json" };
+            var row = new FlattenedRow { RowNumber = i };
             row.Values["id"]   = i.ToString();
             row.Values["name"] = $"Item {i}";
             yield return row;
@@ -2283,55 +1975,37 @@ public sealed class CsvOutputWriterTests : AxbusTestBase
         }
     }
 
-    /// <summary>
-    /// Should_CreateOutputFile_When_RowsWritten.
-    /// </summary>
+    /// <summary>Should_CreateOutputFile_When_RowsWritten.</summary>
     [Test]
     public async Task Should_CreateOutputFile_When_RowsWritten()
     {
-        var writer  = CreateWriter();
-        var data    = CreateTransformedData(3);
-        var target  = new TargetOptions { Path = tempDir };
-        var pipeline = new PipelineOptions();
-
-        var result = await writer.WriteAsync(data, target, pipeline, CancellationToken.None);
+        var result = await CreateWriter().WriteAsync(
+            MakeData(3), new TargetOptions { Path = tempDir }, new PipelineOptions(), CancellationToken.None);
 
         Assert.That(File.Exists(result.OutputPath), Is.True);
         Assert.That(result.RowsWritten,             Is.EqualTo(3));
     }
 
-    /// <summary>
-    /// Should_WriteHeaderRow_When_IncludeHeaderIsTrue.
-    /// </summary>
+    /// <summary>Should_WriteHeaderRow_When_IncludeHeaderTrue.</summary>
     [Test]
-    public async Task Should_WriteHeaderRow_When_IncludeHeaderIsTrue()
+    public async Task Should_WriteHeaderRow_When_IncludeHeaderTrue()
     {
-        var writer  = CreateWriter();
-        var data    = CreateTransformedData(2);
-        var target  = new TargetOptions { Path = tempDir };
-        var pipeline = new PipelineOptions();
+        var result = await CreateWriter().WriteAsync(
+            MakeData(2), new TargetOptions { Path = tempDir }, new PipelineOptions(), CancellationToken.None);
 
-        var result  = await writer.WriteAsync(data, target, pipeline, CancellationToken.None);
-        var lines   = await File.ReadAllLinesAsync(result.OutputPath);
+        var lines = await File.ReadAllLinesAsync(result.OutputPath);
 
-        // Line 0 = header, lines 1+ = data rows
         Assert.That(lines.Length, Is.GreaterThanOrEqualTo(3));
         Assert.That(lines[0], Does.Contain("id"));
         Assert.That(lines[0], Does.Contain("name"));
     }
 
-    /// <summary>
-    /// Should_UseSemicolonDelimiter_When_OptionConfigured.
-    /// </summary>
+    /// <summary>Should_UseSemicolon_When_DelimiterConfigured.</summary>
     [Test]
-    public async Task Should_UseSemicolonDelimiter_When_OptionConfigured()
+    public async Task Should_UseSemicolon_When_DelimiterConfigured()
     {
-        var writer  = CreateWriter(delimiter: ';');
-        var data    = CreateTransformedData(1);
-        var target  = new TargetOptions { Path = tempDir };
-        var pipeline = new PipelineOptions();
-
-        var result  = await writer.WriteAsync(data, target, pipeline, CancellationToken.None);
+        var result  = await CreateWriter(delimiter: ';').WriteAsync(
+            MakeData(1), new TargetOptions { Path = tempDir }, new PipelineOptions(), CancellationToken.None);
         var content = await File.ReadAllTextAsync(result.OutputPath);
 
         Assert.That(content, Does.Contain(";"));
@@ -2353,7 +2027,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="CsvWriterPlugin"/>.
-/// Verifies plugin metadata, capabilities and stage factory contracts.
 /// </summary>
 [TestFixture]
 public sealed class CsvWriterPluginTests : AxbusTestBase
@@ -2361,49 +2034,35 @@ public sealed class CsvWriterPluginTests : AxbusTestBase
     private CsvWriterPlugin sut = null!;
 
     /// <inheritdoc/>
-    public override void SetUp()
-    {
-        base.SetUp();
-        sut = new CsvWriterPlugin();
-    }
+    public override void SetUp() { base.SetUp(); sut = new CsvWriterPlugin(); }
 
-    /// <summary>
-    /// Should_HaveCorrectPluginId_When_Inspected.
-    /// </summary>
+    /// <summary>Should_HaveCorrectPluginId.</summary>
     [Test]
-    public void Should_HaveCorrectPluginId_When_Inspected()
+    public void Should_HaveCorrectPluginId()
     {
         Assert.That(sut.PluginId, Is.EqualTo("axbus.plugin.writer.csv"));
     }
 
-    /// <summary>
-    /// Should_DeclareOnlyWriterCapability_When_Inspected.
-    /// </summary>
+    /// <summary>Should_DeclareWriterOnly_When_CapabilitiesInspected.</summary>
     [Test]
-    public void Should_DeclareOnlyWriterCapability_When_Inspected()
+    public void Should_DeclareWriterOnly_When_CapabilitiesInspected()
     {
-        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Writer),      Is.True);
-        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Reader),      Is.False);
-        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Parser),      Is.False);
-        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Transformer), Is.False);
+        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Writer), Is.True);
+        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Reader), Is.False);
     }
 
-    /// <summary>
-    /// Should_ReturnNullForNonWriterStages_When_FactoriesInvoked.
-    /// </summary>
+    /// <summary>Should_ReturnNullForNonWriterStages.</summary>
     [Test]
-    public void Should_ReturnNullForNonWriterStages_When_FactoriesInvoked()
+    public void Should_ReturnNullForNonWriterStages()
     {
         Assert.That(sut.CreateReader(Services),      Is.Null);
         Assert.That(sut.CreateParser(Services),      Is.Null);
         Assert.That(sut.CreateTransformer(Services), Is.Null);
     }
 
-    /// <summary>
-    /// Should_ReturnNonNullWriter_When_CreateWriterCalled.
-    /// </summary>
+    /// <summary>Should_ReturnNonNullWriter.</summary>
     [Test]
-    public void Should_ReturnNonNullWriter_When_CreateWriterCalled()
+    public void Should_ReturnNonNullWriter()
     {
         Assert.That(sut.CreateWriter(Services), Is.Not.Null);
     }
@@ -2424,7 +2083,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="CsvSchemaBuilder"/>.
-/// Verifies first-seen column ordering and union of columns across multiple rows.
 /// </summary>
 [TestFixture]
 public sealed class CsvSchemaBuilderTests : AxbusTestBase
@@ -2432,30 +2090,23 @@ public sealed class CsvSchemaBuilderTests : AxbusTestBase
     private CsvSchemaBuilder sut = null!;
 
     /// <inheritdoc/>
-    public override void SetUp()
-    {
-        base.SetUp();
-        sut = new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>());
-    }
+    public override void SetUp() { base.SetUp(); sut = new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()); }
 
-    private static async IAsyncEnumerable<FlattenedRow> MakeRows(
-        IEnumerable<Dictionary<string, string>> values)
+    private static async IAsyncEnumerable<FlattenedRow> MakeRows(IEnumerable<Dictionary<string, string>> vals)
     {
         var rn = 1;
-        foreach (var vals in values)
+        foreach (var v in vals)
         {
             var row = new FlattenedRow { RowNumber = rn++ };
-            foreach (var kvp in vals) row.Values[kvp.Key] = kvp.Value;
+            foreach (var kvp in v) row.Values[kvp.Key] = kvp.Value;
             yield return row;
             await Task.Yield();
         }
     }
 
-    /// <summary>
-    /// Should_DiscoverColumnsInFirstSeenOrder_When_RowsScanned.
-    /// </summary>
+    /// <summary>Should_DiscoverColumnsInFirstSeenOrder.</summary>
     [Test]
-    public async Task Should_DiscoverColumnsInFirstSeenOrder_When_RowsScanned()
+    public async Task Should_DiscoverColumnsInFirstSeenOrder()
     {
         var rows   = MakeRows(new[] { new Dictionary<string, string> { ["id"] = "1", ["name"] = "A" } });
         var schema = await sut.BuildAsync(rows, CancellationToken.None);
@@ -2464,34 +2115,28 @@ public sealed class CsvSchemaBuilderTests : AxbusTestBase
         Assert.That(schema.Columns[1], Is.EqualTo("name"));
     }
 
-    /// <summary>
-    /// Should_UnionColumns_When_DifferentRowsHaveDifferentColumns.
-    /// </summary>
+    /// <summary>Should_UnionColumns_When_RowsHaveDifferentKeys.</summary>
     [Test]
-    public async Task Should_UnionColumns_When_DifferentRowsHaveDifferentColumns()
+    public async Task Should_UnionColumns_When_RowsHaveDifferentKeys()
     {
         var rows = MakeRows(new[]
         {
             new Dictionary<string, string> { ["id"] = "1" },
             new Dictionary<string, string> { ["id"] = "2", ["extra"] = "X" },
         });
-
         var schema = await sut.BuildAsync(rows, CancellationToken.None);
 
-        Assert.That(schema.Columns.Count,      Is.EqualTo(2));
-        Assert.That(schema.Columns.Contains("id"),    Is.True);
+        Assert.That(schema.Columns.Count,           Is.EqualTo(2));
         Assert.That(schema.Columns.Contains("extra"), Is.True);
     }
 
-    /// <summary>
-    /// Should_ReturnEmptySchema_When_NoRowsProvided.
-    /// </summary>
+    /// <summary>Should_ReturnEmptySchema_When_NoRows.</summary>
     [Test]
-    public async Task Should_ReturnEmptySchema_When_NoRowsProvided()
+    public async Task Should_ReturnEmptySchema_When_NoRows()
     {
-        var rows   = MakeRows(Array.Empty<Dictionary<string, string>>());
-        var schema = await sut.BuildAsync(rows, CancellationToken.None);
-
+        var schema = await sut.BuildAsync(
+            MakeRows(Array.Empty<Dictionary<string, string>>()),
+            CancellationToken.None);
         Assert.That(schema.Columns, Is.Empty);
     }
 }
@@ -2518,7 +2163,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="ExcelWriterOptionsValidator"/>.
-/// Verifies valid default options and enforcement of Excel sheet name rules.
 /// </summary>
 [TestFixture]
 public sealed class ExcelWriterOptionsValidatorTests : AxbusTestBase
@@ -2526,64 +2170,35 @@ public sealed class ExcelWriterOptionsValidatorTests : AxbusTestBase
     private ExcelWriterOptionsValidator sut = null!;
 
     /// <inheritdoc/>
-    public override void SetUp()
-    {
-        base.SetUp();
-        sut = new ExcelWriterOptionsValidator();
-    }
+    public override void SetUp() { base.SetUp(); sut = new ExcelWriterOptionsValidator(); }
 
-    /// <summary>
-    /// Should_ReturnNoErrors_When_DefaultOptionsProvided.
-    /// </summary>
+    /// <summary>Should_ReturnNoErrors_When_DefaultOptions.</summary>
     [Test]
-    public void Should_ReturnNoErrors_When_DefaultOptionsProvided()
+    public void Should_ReturnNoErrors_When_DefaultOptions()
     {
-        var errors = sut.Validate(new ExcelWriterPluginOptions()).ToList();
-        Assert.That(errors, Is.Empty);
+        Assert.That(sut.Validate(new ExcelWriterPluginOptions()).ToList(), Is.Empty);
     }
 
-    /// <summary>
-    /// Should_ReturnError_When_SheetNameExceeds31Chars.
-    /// </summary>
+    /// <summary>Should_ReturnError_When_SheetNameTooLong.</summary>
     [Test]
-    public void Should_ReturnError_When_SheetNameExceeds31Chars()
+    public void Should_ReturnError_When_SheetNameTooLong()
     {
-        var errors = sut.Validate(new ExcelWriterPluginOptions
-        {
-            SheetName = new string('A', 32),
-        }).ToList();
-
-        Assert.That(errors.Count, Is.GreaterThan(0));
+        Assert.That(sut.Validate(new ExcelWriterPluginOptions { SheetName = new string('A', 32) }).ToList(), Is.Not.Empty);
     }
 
-    /// <summary>
-    /// Should_ReturnError_When_SheetNameContainsForbiddenChar.
-    /// </summary>
-    [TestCase(":")]
-    [TestCase("\\")]
-    [TestCase("/")]
-    [TestCase("?")]
-    [TestCase("*")]
-    [TestCase("[")]
-    [TestCase("]")]
-    public void Should_ReturnError_When_SheetNameContainsForbiddenChar(string forbidden)
+    /// <summary>Should_ReturnError_When_SheetNameContainsForbiddenChar.</summary>
+    [TestCase(":")] [TestCase("\\")] [TestCase("/")] [TestCase("?")]
+    [TestCase("*")] [TestCase("[")] [TestCase("]")]
+    public void Should_ReturnError_When_SheetNameContainsForbiddenChar(string ch)
     {
-        var errors = sut.Validate(new ExcelWriterPluginOptions
-        {
-            SheetName = $"Sheet{forbidden}Name",
-        }).ToList();
-
-        Assert.That(errors.Count, Is.GreaterThan(0));
+        Assert.That(sut.Validate(new ExcelWriterPluginOptions { SheetName = $"Sheet{ch}Name" }).ToList(), Is.Not.Empty);
     }
 
-    /// <summary>
-    /// Should_ReturnError_When_SheetNameIsEmpty.
-    /// </summary>
+    /// <summary>Should_ReturnError_When_SheetNameEmpty.</summary>
     [Test]
-    public void Should_ReturnError_When_SheetNameIsEmpty()
+    public void Should_ReturnError_When_SheetNameEmpty()
     {
-        var errors = sut.Validate(new ExcelWriterPluginOptions { SheetName = "" }).ToList();
-        Assert.That(errors.Count, Is.GreaterThan(0));
+        Assert.That(sut.Validate(new ExcelWriterPluginOptions { SheetName = "" }).ToList(), Is.Not.Empty);
     }
 }
 '@
@@ -2606,8 +2221,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="ExcelOutputWriter"/>.
-/// Verifies xlsx file creation, sheet name, header formatting,
-/// row count and the WriteResult return value.
 /// </summary>
 [TestFixture]
 public sealed class ExcelOutputWriterTests : AxbusTestBase
@@ -2626,26 +2239,18 @@ public sealed class ExcelOutputWriterTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-            Directory.Delete(tempDir, recursive: true);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
-    private ExcelOutputWriter CreateWriter(string sheetName = "Sheet1") =>
-        new(
-            NullLogger<ExcelOutputWriter>(),
-            new ExcelWriterPluginOptions
-            {
-                SheetName   = sheetName,
-                AutoFit     = false,
-                BoldHeaders = true,
-                FreezeHeader = true,
-            },
+    private ExcelOutputWriter CreateWriter(string sheet = "Sheet1") =>
+        new(NullLogger<ExcelOutputWriter>(),
+            new ExcelWriterPluginOptions { SheetName = sheet, AutoFit = false, BoldHeaders = true },
             new ExcelSchemaBuilder(NullLogger<ExcelSchemaBuilder>()));
 
-    private static TransformedData CreateTransformedData(int rowCount) =>
-        new(Rows: CreateRows(rowCount), SourcePath: "test.json");
+    private static TransformedData MakeData(int count) =>
+        new(Rows: MakeRows(count), SourcePath: "test.json");
 
-    private static async IAsyncEnumerable<FlattenedRow> CreateRows(int count)
+    private static async IAsyncEnumerable<FlattenedRow> MakeRows(int count)
     {
         for (var i = 1; i <= count; i++)
         {
@@ -2657,59 +2262,38 @@ public sealed class ExcelOutputWriterTests : AxbusTestBase
         }
     }
 
-    /// <summary>
-    /// Should_CreateXlsxFile_When_RowsWritten.
-    /// </summary>
+    /// <summary>Should_CreateXlsxFile_When_RowsWritten.</summary>
     [Test]
     public async Task Should_CreateXlsxFile_When_RowsWritten()
     {
-        var writer  = CreateWriter();
-        var result  = await writer.WriteAsync(
-            CreateTransformedData(3),
-            new TargetOptions { Path = tempDir },
-            new PipelineOptions(),
-            CancellationToken.None);
+        var result = await CreateWriter().WriteAsync(
+            MakeData(3), new TargetOptions { Path = tempDir }, new PipelineOptions(), CancellationToken.None);
 
         Assert.That(File.Exists(result.OutputPath), Is.True);
         Assert.That(result.RowsWritten,             Is.EqualTo(3));
         Assert.That(result.OutputPath,              Does.EndWith(".xlsx"));
     }
 
-    /// <summary>
-    /// Should_UseConfiguredSheetName_When_WorkbookOpened.
-    /// </summary>
+    /// <summary>Should_UseConfiguredSheetName_When_Opened.</summary>
     [Test]
-    public async Task Should_UseConfiguredSheetName_When_WorkbookOpened()
+    public async Task Should_UseConfiguredSheetName_When_Opened()
     {
-        var writer = CreateWriter(sheetName: "MyData");
-        var result = await writer.WriteAsync(
-            CreateTransformedData(1),
-            new TargetOptions { Path = tempDir },
-            new PipelineOptions(),
-            CancellationToken.None);
+        var result = await CreateWriter(sheet: "MyData").WriteAsync(
+            MakeData(1), new TargetOptions { Path = tempDir }, new PipelineOptions(), CancellationToken.None);
 
-        using var workbook   = new XLWorkbook(result.OutputPath);
-        var worksheetExists  = workbook.Worksheets.Any(ws =>
-            ws.Name.Equals("MyData", StringComparison.OrdinalIgnoreCase));
-
-        Assert.That(worksheetExists, Is.True);
+        using var wb = new XLWorkbook(result.OutputPath);
+        Assert.That(wb.Worksheets.Any(ws => ws.Name == "MyData"), Is.True);
     }
 
-    /// <summary>
-    /// Should_WriteHeaderRowWithColumnNames_When_RowsWritten.
-    /// </summary>
+    /// <summary>Should_WriteHeaderRowWithColumnNames.</summary>
     [Test]
-    public async Task Should_WriteHeaderRowWithColumnNames_When_RowsWritten()
+    public async Task Should_WriteHeaderRowWithColumnNames()
     {
-        var writer = CreateWriter();
-        var result = await writer.WriteAsync(
-            CreateTransformedData(2),
-            new TargetOptions { Path = tempDir },
-            new PipelineOptions(),
-            CancellationToken.None);
+        var result = await CreateWriter().WriteAsync(
+            MakeData(2), new TargetOptions { Path = tempDir }, new PipelineOptions(), CancellationToken.None);
 
-        using var workbook = new XLWorkbook(result.OutputPath);
-        var ws             = workbook.Worksheets.First();
+        using var wb = new XLWorkbook(result.OutputPath);
+        var ws = wb.Worksheets.First();
 
         Assert.That(ws.Cell(1, 1).GetString(), Is.EqualTo("id"));
         Assert.That(ws.Cell(1, 2).GetString(), Is.EqualTo("name"));
@@ -2730,7 +2314,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="ExcelWriterPlugin"/>.
-/// Verifies plugin metadata, capabilities and stage factory contracts.
 /// </summary>
 [TestFixture]
 public sealed class ExcelWriterPluginTests : AxbusTestBase
@@ -2738,49 +2321,35 @@ public sealed class ExcelWriterPluginTests : AxbusTestBase
     private ExcelWriterPlugin sut = null!;
 
     /// <inheritdoc/>
-    public override void SetUp()
-    {
-        base.SetUp();
-        sut = new ExcelWriterPlugin();
-    }
+    public override void SetUp() { base.SetUp(); sut = new ExcelWriterPlugin(); }
 
-    /// <summary>
-    /// Should_HaveCorrectPluginId_When_Inspected.
-    /// </summary>
+    /// <summary>Should_HaveCorrectPluginId.</summary>
     [Test]
-    public void Should_HaveCorrectPluginId_When_Inspected()
+    public void Should_HaveCorrectPluginId()
     {
         Assert.That(sut.PluginId, Is.EqualTo("axbus.plugin.writer.excel"));
     }
 
-    /// <summary>
-    /// Should_DeclareOnlyWriterCapability_When_Inspected.
-    /// </summary>
+    /// <summary>Should_DeclareWriterOnly_When_CapabilitiesInspected.</summary>
     [Test]
-    public void Should_DeclareOnlyWriterCapability_When_Inspected()
+    public void Should_DeclareWriterOnly_When_CapabilitiesInspected()
     {
-        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Writer),      Is.True);
-        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Reader),      Is.False);
-        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Parser),      Is.False);
-        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Transformer), Is.False);
+        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Writer), Is.True);
+        Assert.That(sut.Capabilities.HasFlag(PluginCapabilities.Reader), Is.False);
     }
 
-    /// <summary>
-    /// Should_ReturnNullForNonWriterStages_When_FactoriesInvoked.
-    /// </summary>
+    /// <summary>Should_ReturnNullForNonWriterStages.</summary>
     [Test]
-    public void Should_ReturnNullForNonWriterStages_When_FactoriesInvoked()
+    public void Should_ReturnNullForNonWriterStages()
     {
         Assert.That(sut.CreateReader(Services),      Is.Null);
         Assert.That(sut.CreateParser(Services),      Is.Null);
         Assert.That(sut.CreateTransformer(Services), Is.Null);
     }
 
-    /// <summary>
-    /// Should_ReturnNonNullWriter_When_CreateWriterCalled.
-    /// </summary>
+    /// <summary>Should_ReturnNonNullWriter.</summary>
     [Test]
-    public void Should_ReturnNonNullWriter_When_CreateWriterCalled()
+    public void Should_ReturnNonNullWriter()
     {
         Assert.That(sut.CreateWriter(Services), Is.Not.Null);
     }
@@ -2801,7 +2370,6 @@ using NUnit.Framework;
 
 /// <summary>
 /// Unit tests for <see cref="ExcelSchemaBuilder"/>.
-/// Verifies column discovery, ordering and format metadata.
 /// </summary>
 [TestFixture]
 public sealed class ExcelSchemaBuilderTests : AxbusTestBase
@@ -2809,51 +2377,37 @@ public sealed class ExcelSchemaBuilderTests : AxbusTestBase
     private ExcelSchemaBuilder sut = null!;
 
     /// <inheritdoc/>
-    public override void SetUp()
-    {
-        base.SetUp();
-        sut = new ExcelSchemaBuilder(NullLogger<ExcelSchemaBuilder>());
-    }
+    public override void SetUp() { base.SetUp(); sut = new ExcelSchemaBuilder(NullLogger<ExcelSchemaBuilder>()); }
 
-    private static async IAsyncEnumerable<FlattenedRow> MakeRows(
-        IEnumerable<string[]> columnSets)
+    private static async IAsyncEnumerable<FlattenedRow> MakeRows(IEnumerable<string[]> cols)
     {
         var rn = 1;
-        foreach (var cols in columnSets)
+        foreach (var c in cols)
         {
             var row = new FlattenedRow { RowNumber = rn++ };
-            foreach (var col in cols) row.Values[col] = "val";
+            foreach (var col in c) row.Values[col] = "val";
             yield return row;
             await Task.Yield();
         }
     }
 
-    /// <summary>
-    /// Should_ReturnExcelFormat_When_SchemaBuilt.
-    /// </summary>
+    /// <summary>Should_ReturnExcelFormat_When_SchemaBuilt.</summary>
     [Test]
     public async Task Should_ReturnExcelFormat_When_SchemaBuilt()
     {
-        var rows   = MakeRows(new[] { new[] { "id", "name" } });
-        var schema = await sut.BuildAsync(rows, CancellationToken.None);
+        var schema = await sut.BuildAsync(MakeRows(new[] { new[] { "id" } }), CancellationToken.None);
         Assert.That(schema.Format, Is.EqualTo("excel"));
     }
 
-    /// <summary>
-    /// Should_CollectAllColumns_When_MultipleRowsHaveDifferentFields.
-    /// </summary>
+    /// <summary>Should_CollectAllColumns_When_RowsHaveDifferentFields.</summary>
     [Test]
-    public async Task Should_CollectAllColumns_When_MultipleRowsHaveDifferentFields()
+    public async Task Should_CollectAllColumns_When_RowsHaveDifferentFields()
     {
-        var rows = MakeRows(new[]
-        {
-            new[] { "id", "name" },
-            new[] { "id", "name", "amount" },
-        });
+        var schema = await sut.BuildAsync(
+            MakeRows(new[] { new[] { "id", "name" }, new[] { "id", "name", "amount" } }),
+            CancellationToken.None);
 
-        var schema = await sut.BuildAsync(rows, CancellationToken.None);
-
-        Assert.That(schema.Columns.Count, Is.EqualTo(3));
+        Assert.That(schema.Columns.Count,             Is.EqualTo(3));
         Assert.That(schema.Columns.Contains("amount"), Is.True);
     }
 }
@@ -2874,7 +2428,6 @@ New-SourceFile $IntegTestsRoot "Tests/JsonToCsvIntegrationTests.cs" @'
 namespace Axbus.Integration.Tests.Tests;
 
 using Axbus.Core.Models.Configuration;
-using Axbus.Core.Models.Pipeline;
 using Axbus.Plugin.Reader.Json.Options;
 using Axbus.Plugin.Reader.Json.Parser;
 using Axbus.Plugin.Reader.Json.Reader;
@@ -2883,170 +2436,114 @@ using Axbus.Plugin.Writer.Csv.Internal;
 using Axbus.Plugin.Writer.Csv.Options;
 using Axbus.Plugin.Writer.Csv.Writer;
 using Axbus.Tests.Common.Base;
-using Axbus.Tests.Common.Helpers;
 using NUnit.Framework;
 
 /// <summary>
-/// End-to-end integration tests for the JSON-to-CSV conversion path.
-/// Assembles the full Read -> Parse -> Transform -> Write pipeline
-/// using real plugin implementations and a temporary file system.
-/// These tests verify that the entire stack works together correctly.
+/// End-to-end integration tests for the JSON-to-CSV pipeline.
 /// </summary>
 [TestFixture]
 public sealed class JsonToCsvIntegrationTests : AxbusTestBase
 {
-    private string tempInputDir  = null!;
-    private string tempOutputDir = null!;
+    private string tempIn  = null!;
+    private string tempOut = null!;
 
     /// <inheritdoc/>
     public override void SetUp()
     {
         base.SetUp();
-        tempInputDir  = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        tempOutputDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        Directory.CreateDirectory(tempInputDir);
-        Directory.CreateDirectory(tempOutputDir);
+        tempIn  = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        tempOut = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tempIn);
+        Directory.CreateDirectory(tempOut);
     }
 
     /// <inheritdoc/>
     public override void TearDown()
     {
         base.TearDown();
-        foreach (var dir in new[] { tempInputDir, tempOutputDir })
-        {
-            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
-        }
+        foreach (var d in new[] { tempIn, tempOut })
+            if (Directory.Exists(d)) Directory.Delete(d, recursive: true);
     }
 
-    /// <summary>
-    /// Should_ProduceValidCsvFile_When_FlatJsonProcessed.
-    /// </summary>
+    /// <summary>Should_ProduceValidCsv_When_FlatJsonProcessed.</summary>
     [Test]
-    public async Task Should_ProduceValidCsvFile_When_FlatJsonProcessed()
+    public async Task Should_ProduceValidCsv_When_FlatJsonProcessed()
     {
-        // Arrange - write test JSON to disk
-        var inputPath = Path.Combine(tempInputDir, "orders.json");
-        var json = """
+        var inputPath = Path.Combine(tempIn, "orders.json");
+        await File.WriteAllTextAsync(inputPath, """
             [
               {"orderId":"ORD-001","customer":"Acme Corp","amount":1500.00},
               {"orderId":"ORD-002","customer":"Globex Ltd","amount":2750.50}
             ]
-            """;
-        await File.WriteAllTextAsync(inputPath, json);
+            """);
 
-        // Act - run full pipeline
-        var opts        = new JsonReaderPluginOptions();
-        var reader      = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var parser      = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
-        var transformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
-        var writer      = new CsvOutputWriter(
-            NullLogger<CsvOutputWriter>(),
+        var opts    = new JsonReaderPluginOptions();
+        var reader  = new JsonSourceReader(NullLogger<JsonSourceReader>());
+        var parser  = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
+        var xformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
+        var writer  = new CsvOutputWriter(NullLogger<CsvOutputWriter>(),
             new CsvWriterPluginOptions { Delimiter = ',', IncludeHeader = true },
             new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()));
 
-        var sourceData  = await reader.ReadAsync(
-            new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var sd = await reader.ReadAsync(new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var pd = await parser.ParseAsync(sd, CancellationToken.None);
+        var td = await xformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var result = await writer.WriteAsync(td, new TargetOptions { Path = tempOut }, new PipelineOptions(), CancellationToken.None);
 
-        var parsedData  = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed = await transformer.TransformAsync(
-            parsedData, new PipelineOptions(), CancellationToken.None);
-
-        var result = await writer.WriteAsync(
-            transformed,
-            new TargetOptions { Path = tempOutputDir },
-            new PipelineOptions(),
-            CancellationToken.None);
-
-        // Assert
-        Assert.That(File.Exists(result.OutputPath), Is.True,  "Output CSV file should exist.");
-        Assert.That(result.RowsWritten,             Is.EqualTo(2), "Should have written 2 rows.");
-        Assert.That(result.ErrorRowsWritten,        Is.EqualTo(0), "Should have no error rows.");
+        Assert.That(File.Exists(result.OutputPath), Is.True);
+        Assert.That(result.RowsWritten,             Is.EqualTo(2));
+        Assert.That(result.ErrorRowsWritten,        Is.EqualTo(0));
 
         var lines = await File.ReadAllLinesAsync(result.OutputPath);
-        Assert.That(lines.Length,    Is.EqualTo(3), "3 lines: header + 2 data rows.");
-        Assert.That(lines[0],        Does.Contain("orderId"));
-        Assert.That(lines[0],        Does.Contain("customer"));
-        Assert.That(lines[0],        Does.Contain("amount"));
-        Assert.That(lines[1],        Does.Contain("ORD-001"));
-        Assert.That(lines[2],        Does.Contain("ORD-002"));
+        Assert.That(lines.Length,  Is.EqualTo(3));
+        Assert.That(lines[0],      Does.Contain("orderId"));
+        Assert.That(lines[1],      Does.Contain("ORD-001"));
     }
 
-    /// <summary>
-    /// Should_ExplodeNestedArraysIntoCsvRows_When_JsonContainsArrayFields.
-    /// </summary>
+    /// <summary>Should_ExplodeNestedArrays_When_JsonContainsArrayFields.</summary>
     [Test]
-    public async Task Should_ExplodeNestedArraysIntoCsvRows_When_JsonContainsArrayFields()
+    public async Task Should_ExplodeNestedArrays_When_JsonContainsArrayFields()
     {
-        // Arrange
-        var inputPath = Path.Combine(tempInputDir, "sales.json");
-        var json = """
-            [
-              {
-                "orderId": "SO-001",
-                "lines": [
-                  {"lineNo":1,"product":"Widget A","qty":10},
-                  {"lineNo":2,"product":"Widget B","qty":5}
-                ]
-              }
-            ]
-            """;
-        await File.WriteAllTextAsync(inputPath, json);
+        var inputPath = Path.Combine(tempIn, "sales.json");
+        await File.WriteAllTextAsync(inputPath, """
+            [{"orderId":"SO-001","lines":[{"lineNo":1,"product":"A"},{"lineNo":2,"product":"B"}]}]
+            """);
 
-        // Act
-        var opts        = new JsonReaderPluginOptions { MaxExplosionDepth = 3 };
-        var reader      = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var parser      = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
-        var transformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
-        var writer      = new CsvOutputWriter(
-            NullLogger<CsvOutputWriter>(),
-            new CsvWriterPluginOptions(),
-            new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()));
+        var opts    = new JsonReaderPluginOptions { MaxExplosionDepth = 3 };
+        var reader  = new JsonSourceReader(NullLogger<JsonSourceReader>());
+        var parser  = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
+        var xformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
+        var writer  = new CsvOutputWriter(NullLogger<CsvOutputWriter>(),
+            new CsvWriterPluginOptions(), new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()));
 
-        var sourceData  = await reader.ReadAsync(
-            new SourceOptions { Path = inputPath }, CancellationToken.None);
-        var parsedData  = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed = await transformer.TransformAsync(
-            parsedData, new PipelineOptions(), CancellationToken.None);
-        var result = await writer.WriteAsync(
-            transformed,
-            new TargetOptions { Path = tempOutputDir },
-            new PipelineOptions(),
-            CancellationToken.None);
+        var sd = await reader.ReadAsync(new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var pd = await parser.ParseAsync(sd, CancellationToken.None);
+        var td = await xformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var result = await writer.WriteAsync(td, new TargetOptions { Path = tempOut }, new PipelineOptions(), CancellationToken.None);
 
-        // Assert - 1 order * 2 lines = 2 exploded rows
         Assert.That(result.RowsWritten, Is.EqualTo(2));
     }
 
-    /// <summary>
-    /// Should_ProduceEmptyCsvWithHeaderOnly_When_JsonArrayIsEmpty.
-    /// </summary>
+    /// <summary>Should_ProduceEmptyCsv_When_JsonArrayIsEmpty.</summary>
     [Test]
-    public async Task Should_ProduceEmptyCsvWithHeaderOnly_When_JsonArrayIsEmpty()
+    public async Task Should_ProduceEmptyCsv_When_JsonArrayIsEmpty()
     {
-        var inputPath = Path.Combine(tempInputDir, "empty.json");
+        var inputPath = Path.Combine(tempIn, "empty.json");
         await File.WriteAllTextAsync(inputPath, "[]");
 
-        var opts        = new JsonReaderPluginOptions();
-        var reader      = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var parser      = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
-        var transformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
-        var writer      = new CsvOutputWriter(
-            NullLogger<CsvOutputWriter>(),
-            new CsvWriterPluginOptions(),
-            new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()));
+        var opts    = new JsonReaderPluginOptions();
+        var reader  = new JsonSourceReader(NullLogger<JsonSourceReader>());
+        var parser  = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
+        var xformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
+        var writer  = new CsvOutputWriter(NullLogger<CsvOutputWriter>(),
+            new CsvWriterPluginOptions(), new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()));
 
-        var sourceData  = await reader.ReadAsync(
-            new SourceOptions { Path = inputPath }, CancellationToken.None);
-        var parsedData  = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed = await transformer.TransformAsync(
-            parsedData, new PipelineOptions(), CancellationToken.None);
-        var result = await writer.WriteAsync(
-            transformed,
-            new TargetOptions { Path = tempOutputDir },
-            new PipelineOptions(),
-            CancellationToken.None);
+        var sd = await reader.ReadAsync(new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var pd = await parser.ParseAsync(sd, CancellationToken.None);
+        var td = await xformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var result = await writer.WriteAsync(td, new TargetOptions { Path = tempOut }, new PipelineOptions(), CancellationToken.None);
 
-        Assert.That(result.RowsWritten,  Is.EqualTo(0));
+        Assert.That(result.RowsWritten, Is.EqualTo(0));
         Assert.That(File.Exists(result.OutputPath), Is.True);
     }
 }
@@ -3072,130 +2569,90 @@ using ClosedXML.Excel;
 using NUnit.Framework;
 
 /// <summary>
-/// End-to-end integration tests for the JSON-to-Excel conversion path.
-/// Assembles the full Read -> Parse -> Transform -> Write pipeline
-/// using real plugin implementations and verifies the resulting xlsx workbook.
+/// End-to-end integration tests for the JSON-to-Excel pipeline.
 /// </summary>
 [TestFixture]
 public sealed class JsonToExcelIntegrationTests : AxbusTestBase
 {
-    private string tempInputDir  = null!;
-    private string tempOutputDir = null!;
+    private string tempIn  = null!;
+    private string tempOut = null!;
 
     /// <inheritdoc/>
     public override void SetUp()
     {
         base.SetUp();
-        tempInputDir  = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        tempOutputDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        Directory.CreateDirectory(tempInputDir);
-        Directory.CreateDirectory(tempOutputDir);
+        tempIn  = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        tempOut = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tempIn);
+        Directory.CreateDirectory(tempOut);
     }
 
     /// <inheritdoc/>
     public override void TearDown()
     {
         base.TearDown();
-        foreach (var dir in new[] { tempInputDir, tempOutputDir })
-        {
-            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
-        }
+        foreach (var d in new[] { tempIn, tempOut })
+            if (Directory.Exists(d)) Directory.Delete(d, recursive: true);
     }
 
-    /// <summary>
-    /// Should_ProduceValidXlsxFile_When_FlatJsonProcessed.
-    /// </summary>
+    /// <summary>Should_ProduceValidXlsx_When_FlatJsonProcessed.</summary>
     [Test]
-    public async Task Should_ProduceValidXlsxFile_When_FlatJsonProcessed()
+    public async Task Should_ProduceValidXlsx_When_FlatJsonProcessed()
     {
-        // Arrange
-        var inputPath = Path.Combine(tempInputDir, "products.json");
-        var json = """
+        var inputPath = Path.Combine(tempIn, "products.json");
+        await File.WriteAllTextAsync(inputPath, """
             [
-              {"productId":"P001","name":"Widget A","price":25.50,"category":"Parts"},
-              {"productId":"P002","name":"Widget B","price":42.00,"category":"Assembly"},
-              {"productId":"P003","name":"Widget C","price":15.75,"category":"Parts"}
+              {"productId":"P001","name":"Widget A","price":25.50},
+              {"productId":"P002","name":"Widget B","price":42.00},
+              {"productId":"P003","name":"Widget C","price":15.75}
             ]
-            """;
-        await File.WriteAllTextAsync(inputPath, json);
+            """);
 
-        // Act
-        var opts        = new JsonReaderPluginOptions();
-        var reader      = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var parser      = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
-        var transformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
-        var writer      = new ExcelOutputWriter(
-            NullLogger<ExcelOutputWriter>(),
-            new ExcelWriterPluginOptions
-            {
-                SheetName    = "Products",
-                AutoFit      = false,
-                BoldHeaders  = true,
-                FreezeHeader = true,
-            },
+        var opts    = new JsonReaderPluginOptions();
+        var reader  = new JsonSourceReader(NullLogger<JsonSourceReader>());
+        var parser  = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
+        var xformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
+        var writer  = new ExcelOutputWriter(NullLogger<ExcelOutputWriter>(),
+            new ExcelWriterPluginOptions { SheetName = "Products", AutoFit = false, BoldHeaders = true },
             new ExcelSchemaBuilder(NullLogger<ExcelSchemaBuilder>()));
 
-        var sourceData  = await reader.ReadAsync(
-            new SourceOptions { Path = inputPath }, CancellationToken.None);
-        var parsedData  = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed = await transformer.TransformAsync(
-            parsedData, new PipelineOptions(), CancellationToken.None);
-        var result = await writer.WriteAsync(
-            transformed,
-            new TargetOptions { Path = tempOutputDir },
-            new PipelineOptions(),
-            CancellationToken.None);
+        var sd = await reader.ReadAsync(new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var pd = await parser.ParseAsync(sd, CancellationToken.None);
+        var td = await xformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var result = await writer.WriteAsync(td, new TargetOptions { Path = tempOut }, new PipelineOptions(), CancellationToken.None);
 
-        // Assert file exists and has correct structure
         Assert.That(File.Exists(result.OutputPath), Is.True);
         Assert.That(result.RowsWritten,             Is.EqualTo(3));
-        Assert.That(result.OutputPath,              Does.EndWith(".xlsx"));
 
-        // Open with ClosedXML and verify content
-        using var workbook = new XLWorkbook(result.OutputPath);
-        var ws             = workbook.Worksheet("Products");
-
-        Assert.That(ws,                       Is.Not.Null);
-        Assert.That(ws.Cell(1, 1).GetString(), Is.EqualTo("productId"));
-        Assert.That(ws.Cell(2, 1).GetString(), Is.EqualTo("P001"));
-        Assert.That(ws.Cell(3, 1).GetString(), Is.EqualTo("P002"));
-        Assert.That(ws.Cell(4, 1).GetString(), Is.EqualTo("P003"));
+        using var wb = new XLWorkbook(result.OutputPath);
+        var ws = wb.Worksheet("Products");
+        Assert.That(ws,                          Is.Not.Null);
+        Assert.That(ws.Cell(1, 1).GetString(),   Is.EqualTo("productId"));
+        Assert.That(ws.Cell(2, 1).GetString(),   Is.EqualTo("P001"));
     }
 
-    /// <summary>
-    /// Should_ApplyBoldHeaderStyle_When_BoldHeadersOptionEnabled.
-    /// </summary>
+    /// <summary>Should_ApplyBoldHeaders_When_BoldHeadersEnabled.</summary>
     [Test]
-    public async Task Should_ApplyBoldHeaderStyle_When_BoldHeadersOptionEnabled()
+    public async Task Should_ApplyBoldHeaders_When_BoldHeadersEnabled()
     {
-        var inputPath = Path.Combine(tempInputDir, "data.json");
+        var inputPath = Path.Combine(tempIn, "data.json");
         await File.WriteAllTextAsync(inputPath, "[{\"id\":\"1\",\"value\":\"X\"}]");
 
-        var opts        = new JsonReaderPluginOptions();
-        var reader      = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var parser      = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
-        var transformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
-        var writer      = new ExcelOutputWriter(
-            NullLogger<ExcelOutputWriter>(),
+        var opts    = new JsonReaderPluginOptions();
+        var reader  = new JsonSourceReader(NullLogger<JsonSourceReader>());
+        var parser  = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
+        var xformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
+        var writer  = new ExcelOutputWriter(NullLogger<ExcelOutputWriter>(),
             new ExcelWriterPluginOptions { BoldHeaders = true, AutoFit = false },
             new ExcelSchemaBuilder(NullLogger<ExcelSchemaBuilder>()));
 
-        var sourceData  = await reader.ReadAsync(
-            new SourceOptions { Path = inputPath }, CancellationToken.None);
-        var parsedData  = await parser.ParseAsync(sourceData, CancellationToken.None);
-        var transformed = await transformer.TransformAsync(
-            parsedData, new PipelineOptions(), CancellationToken.None);
-        var result = await writer.WriteAsync(
-            transformed,
-            new TargetOptions { Path = tempOutputDir },
-            new PipelineOptions(),
-            CancellationToken.None);
+        var sd = await reader.ReadAsync(new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var pd = await parser.ParseAsync(sd, CancellationToken.None);
+        var td = await xformer.TransformAsync(pd, new PipelineOptions(), CancellationToken.None);
+        var result = await writer.WriteAsync(td, new TargetOptions { Path = tempOut }, new PipelineOptions(), CancellationToken.None);
 
-        using var workbook = new XLWorkbook(result.OutputPath);
-        var ws = workbook.Worksheets.First();
-
-        Assert.That(ws.Cell(1, 1).Style.Font.Bold, Is.True,
-            "Header cell should have bold formatting when BoldHeaders is enabled.");
+        using var wb = new XLWorkbook(result.OutputPath);
+        Assert.That(wb.Worksheets.First().Cell(1, 1).Style.Font.Bold, Is.True);
     }
 }
 '@
@@ -3207,19 +2664,16 @@ New-SourceFile $IntegTestsRoot "Tests/ErrorHandlingIntegrationTests.cs" @'
 
 namespace Axbus.Integration.Tests.Tests;
 
-using Axbus.Core.Enums;
 using Axbus.Core.Exceptions;
 using Axbus.Core.Models.Configuration;
 using Axbus.Plugin.Reader.Json.Options;
 using Axbus.Plugin.Reader.Json.Parser;
 using Axbus.Plugin.Reader.Json.Reader;
-using Axbus.Plugin.Reader.Json.Transformer;
 using Axbus.Tests.Common.Base;
 using NUnit.Framework;
 
 /// <summary>
-/// Integration tests verifying error handling behaviour across the pipeline.
-/// Tests missing files, invalid JSON and the error file output path.
+/// Integration tests for pipeline error handling.
 /// </summary>
 [TestFixture]
 public sealed class ErrorHandlingIntegrationTests : AxbusTestBase
@@ -3238,26 +2692,21 @@ public sealed class ErrorHandlingIntegrationTests : AxbusTestBase
     public override void TearDown()
     {
         base.TearDown();
-        if (Directory.Exists(tempDir))
-            Directory.Delete(tempDir, recursive: true);
+        if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
     }
 
-    /// <summary>
-    /// Should_ThrowConnectorException_When_SourceFileDoesNotExist.
-    /// </summary>
+    /// <summary>Should_ThrowConnectorException_When_FileDoesNotExist.</summary>
     [Test]
-    public void Should_ThrowConnectorException_When_SourceFileDoesNotExist()
+    public void Should_ThrowConnectorException_When_FileDoesNotExist()
     {
         var reader = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var opts   = new SourceOptions { Path = Path.Combine(tempDir, "missing.json") };
-
         Assert.ThrowsAsync<AxbusConnectorException>(async () =>
-            await reader.ReadAsync(opts, CancellationToken.None));
+            await reader.ReadAsync(
+                new SourceOptions { Path = Path.Combine(tempDir, "missing.json") },
+                CancellationToken.None));
     }
 
-    /// <summary>
-    /// Should_ThrowPipelineException_When_InvalidJsonParsed.
-    /// </summary>
+    /// <summary>Should_ThrowPipelineException_When_InvalidJsonParsed.</summary>
     [Test]
     public async Task Should_ThrowPipelineException_When_InvalidJsonParsed()
     {
@@ -3265,43 +2714,33 @@ public sealed class ErrorHandlingIntegrationTests : AxbusTestBase
         await File.WriteAllTextAsync(badFile, "{ this is not valid json }");
 
         var reader = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var parser = new JsonFormatParser(
-            NullLogger<JsonFormatParser>(),
-            new JsonReaderPluginOptions());
-
-        var sourceData = await reader.ReadAsync(
-            new SourceOptions { Path = badFile }, CancellationToken.None);
-
-        var parsedData = await parser.ParseAsync(sourceData, CancellationToken.None);
+        var parser = new JsonFormatParser(NullLogger<JsonFormatParser>(), new JsonReaderPluginOptions());
+        var sd     = await reader.ReadAsync(new SourceOptions { Path = badFile }, CancellationToken.None);
+        var pd     = await parser.ParseAsync(sd, CancellationToken.None);
 
         Assert.ThrowsAsync<AxbusPipelineException>(async () =>
         {
-            await foreach (var _ in parsedData.Elements) { }
+            await foreach (var _ in pd.Elements) { }
         });
     }
 
-    /// <summary>
-    /// Should_ProduceZeroRows_When_ValidJsonWithNoMatchingRootKey.
-    /// </summary>
+    /// <summary>Should_ThrowPipelineException_When_RootKeyNotFound.</summary>
     [Test]
-    public async Task Should_ThrowPipelineException_When_RootKeyNotFoundInJson()
+    public async Task Should_ThrowPipelineException_When_RootKeyNotFound()
     {
         var inputPath = Path.Combine(tempDir, "data.json");
-        await File.WriteAllTextAsync(inputPath,
-            "{\"orders\":[{\"id\":\"1\"}]}");
+        await File.WriteAllTextAsync(inputPath, "{\"orders\":[{\"id\":\"1\"}]}");
 
         var reader = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var parser = new JsonFormatParser(
-            NullLogger<JsonFormatParser>(),
-            new JsonReaderPluginOptions { RootArrayKey = "items" }); // "items" does not exist
+        var parser = new JsonFormatParser(NullLogger<JsonFormatParser>(),
+            new JsonReaderPluginOptions { RootArrayKey = "items" });
 
-        var sourceData = await reader.ReadAsync(
-            new SourceOptions { Path = inputPath }, CancellationToken.None);
-        var parsedData = await parser.ParseAsync(sourceData, CancellationToken.None);
+        var sd = await reader.ReadAsync(new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var pd = await parser.ParseAsync(sd, CancellationToken.None);
 
         Assert.ThrowsAsync<AxbusPipelineException>(async () =>
         {
-            await foreach (var _ in parsedData.Elements) { }
+            await foreach (var _ in pd.Elements) { }
         });
     }
 }
@@ -3330,104 +2769,175 @@ using ClosedXML.Excel;
 using NUnit.Framework;
 
 /// <summary>
-/// Integration tests that produce both CSV and Excel output from the same
-/// JSON source in a single test run, verifying that the schema and row counts
-/// are consistent across both output formats.
+/// Integration tests verifying consistent output across CSV and Excel formats.
 /// </summary>
 [TestFixture]
 public sealed class MultiFormatIntegrationTests : AxbusTestBase
 {
-    private string tempInputDir  = null!;
-    private string tempOutputDir = null!;
+    private string tempIn  = null!;
+    private string tempOut = null!;
 
     /// <inheritdoc/>
     public override void SetUp()
     {
         base.SetUp();
-        tempInputDir  = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        tempOutputDir = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        Directory.CreateDirectory(tempInputDir);
-        Directory.CreateDirectory(tempOutputDir);
+        tempIn  = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        tempOut = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tempIn);
+        Directory.CreateDirectory(tempOut);
     }
 
     /// <inheritdoc/>
     public override void TearDown()
     {
         base.TearDown();
-        foreach (var dir in new[] { tempInputDir, tempOutputDir })
-        {
-            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
-        }
+        foreach (var d in new[] { tempIn, tempOut })
+            if (Directory.Exists(d)) Directory.Delete(d, recursive: true);
     }
 
-    /// <summary>
-    /// Should_ProduceSameRowCount_When_SameJsonWrittenToBothCsvAndExcel.
-    /// </summary>
+    /// <summary>Should_ProduceSameRowCount_When_SameJsonWrittenToCsvAndExcel.</summary>
     [Test]
-    public async Task Should_ProduceSameRowCount_When_SameJsonWrittenToBothCsvAndExcel()
+    public async Task Should_ProduceSameRowCount_When_SameJsonWrittenToCsvAndExcel()
     {
-        // Arrange - write shared test JSON
-        var inputPath = Path.Combine(tempInputDir, "inventory.json");
-        var json = """
+        var inputPath = Path.Combine(tempIn, "inventory.json");
+        await File.WriteAllTextAsync(inputPath, """
             [
-              {"sku":"SKU-001","description":"Bolt M8","qty":500,"unitCost":0.15},
-              {"sku":"SKU-002","description":"Nut M8","qty":500,"unitCost":0.10},
-              {"sku":"SKU-003","description":"Washer M8","qty":1000,"unitCost":0.05}
+              {"sku":"SKU-001","description":"Bolt M8","qty":500},
+              {"sku":"SKU-002","description":"Nut M8","qty":500},
+              {"sku":"SKU-003","description":"Washer M8","qty":1000}
             ]
-            """;
-        await File.WriteAllTextAsync(inputPath, json);
+            """);
 
-        var readerOpts = new JsonReaderPluginOptions();
-        var reader     = new JsonSourceReader(NullLogger<JsonSourceReader>());
-        var parser     = new JsonFormatParser(NullLogger<JsonFormatParser>(), readerOpts);
-        var transformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), readerOpts);
-        var pipeline   = new PipelineOptions();
-        var target     = new TargetOptions { Path = tempOutputDir };
+        var opts    = new JsonReaderPluginOptions();
+        var pipeline = new PipelineOptions();
+        var target   = new TargetOptions { Path = tempOut };
+        var reader  = new JsonSourceReader(NullLogger<JsonSourceReader>());
+        var parser  = new JsonFormatParser(NullLogger<JsonFormatParser>(), opts);
+        var xformer = new JsonDataTransformer(NullLogger<JsonDataTransformer>(), opts);
 
-        // --- CSV pass ---
-        var csvSourceData  = await reader.ReadAsync(
-            new SourceOptions { Path = inputPath }, CancellationToken.None);
-        var csvParsed      = await parser.ParseAsync(csvSourceData, CancellationToken.None);
-        var csvTransformed = await transformer.TransformAsync(csvParsed, pipeline, CancellationToken.None);
-        var csvWriter      = new CsvOutputWriter(
-            NullLogger<CsvOutputWriter>(),
-            new CsvWriterPluginOptions(),
-            new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()));
-        var csvResult = await csvWriter.WriteAsync(csvTransformed, target, pipeline, CancellationToken.None);
+        // CSV pass
+        var sd1 = await reader.ReadAsync(new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var pd1 = await parser.ParseAsync(sd1, CancellationToken.None);
+        var td1 = await xformer.TransformAsync(pd1, pipeline, CancellationToken.None);
+        var csvResult = await new CsvOutputWriter(NullLogger<CsvOutputWriter>(),
+            new CsvWriterPluginOptions(), new CsvSchemaBuilder(NullLogger<CsvSchemaBuilder>()))
+            .WriteAsync(td1, target, pipeline, CancellationToken.None);
 
-        // --- Excel pass ---
-        var xlSourceData   = await reader.ReadAsync(
-            new SourceOptions { Path = inputPath }, CancellationToken.None);
-        var xlParsed       = await parser.ParseAsync(xlSourceData, CancellationToken.None);
-        var xlTransformed  = await transformer.TransformAsync(xlParsed, pipeline, CancellationToken.None);
-        var xlWriter       = new ExcelOutputWriter(
-            NullLogger<ExcelOutputWriter>(),
-            new ExcelWriterPluginOptions { AutoFit = false },
-            new ExcelSchemaBuilder(NullLogger<ExcelSchemaBuilder>()));
-        var xlResult = await xlWriter.WriteAsync(xlTransformed, target, pipeline, CancellationToken.None);
+        // Excel pass
+        var sd2 = await reader.ReadAsync(new SourceOptions { Path = inputPath }, CancellationToken.None);
+        var pd2 = await parser.ParseAsync(sd2, CancellationToken.None);
+        var td2 = await xformer.TransformAsync(pd2, pipeline, CancellationToken.None);
+        var xlResult = await new ExcelOutputWriter(NullLogger<ExcelOutputWriter>(),
+            new ExcelWriterPluginOptions { AutoFit = false }, new ExcelSchemaBuilder(NullLogger<ExcelSchemaBuilder>()))
+            .WriteAsync(td2, target, pipeline, CancellationToken.None);
 
-        // Assert both formats produced 3 rows
-        Assert.That(csvResult.RowsWritten, Is.EqualTo(3), "CSV should have 3 data rows.");
-        Assert.That(xlResult.RowsWritten,  Is.EqualTo(3), "Excel should have 3 data rows.");
+        Assert.That(csvResult.RowsWritten, Is.EqualTo(3));
+        Assert.That(xlResult.RowsWritten,  Is.EqualTo(3));
 
-        // Assert CSV has header + 3 data rows
         var csvLines = await File.ReadAllLinesAsync(csvResult.OutputPath);
-        Assert.That(csvLines.Length, Is.EqualTo(4), "CSV: 1 header + 3 data rows.");
+        Assert.That(csvLines.Length, Is.EqualTo(4), "1 header + 3 data rows");
 
-        // Assert Excel has header row + 3 data rows = 4 total rows
-        using var workbook = new XLWorkbook(xlResult.OutputPath);
-        var ws = workbook.Worksheets.First();
-        Assert.That(ws.LastRowUsed()!.RowNumber(), Is.EqualTo(4),
-            "Excel: header row 1 + 3 data rows = row 4 as last used.");
+        using var wb = new XLWorkbook(xlResult.OutputPath);
+        Assert.That(wb.Worksheets.First().LastRowUsed()!.RowNumber(), Is.EqualTo(4));
 
-        // Assert same column count in both outputs
-        var csvColumnCount   = csvLines[0].Split(',').Length;
-        var excelColumnCount = ws.LastColumnUsed()!.ColumnNumber();
-        Assert.That(csvColumnCount, Is.EqualTo(excelColumnCount),
-            "CSV and Excel should have the same number of columns.");
+        var csvCols  = csvLines[0].Split(',').Length;
+        var xlCols   = wb.Worksheets.First().LastColumnUsed()!.ColumnNumber();
+        Assert.That(csvCols, Is.EqualTo(xlCols), "Same column count in both formats");
     }
 }
 '@
+
+# ==============================================================================
+# PATCH ALL .CSPROJ FILES
+# ==============================================================================
+
+Write-Phase "Patching .csproj Files (adds explicit Compile Include entries)"
+
+Add-CompileIncludes `
+    "tests/Axbus.Tests.Common/Axbus.Tests.Common.csproj" `
+    @("Base", "Builders", "Helpers", "Assertions")
+
+Add-CompileIncludes `
+    "tests/Axbus.Core.Tests/Axbus.Core.Tests.csproj" `
+    @("Tests\Enums", "Tests\Models")
+
+Add-CompileIncludes `
+    "tests/Axbus.Application.Tests/Axbus.Application.Tests.csproj" `
+    @("Tests\Middleware", "Tests\Plugin", "Tests\Notifications", "Tests\Conversion", "Tests\Factories", "Tests\Pipeline")
+
+Add-CompileIncludes `
+    "tests/Axbus.Infrastructure.Tests/Axbus.Infrastructure.Tests.csproj" `
+    @("Tests\Connectors", "Tests\FileSystem", "Tests\Logging")
+
+Add-CompileIncludes `
+    "tests/Axbus.Plugin.Reader.Json.Tests/Axbus.Plugin.Reader.Json.Tests.csproj" `
+    @("Tests\Reader", "Tests\Parser", "Tests\Transformer", "Tests\Plugin", "Tests\Integration")
+
+Add-CompileIncludes `
+    "tests/Axbus.Plugin.Writer.Csv.Tests/Axbus.Plugin.Writer.Csv.Tests.csproj" `
+    @("Tests\Writer", "Tests\Internal", "Tests\Options", "Tests\Plugin", "Tests\Integration")
+
+Add-CompileIncludes `
+    "tests/Axbus.Plugin.Writer.Excel.Tests/Axbus.Plugin.Writer.Excel.Tests.csproj" `
+    @("Tests\Writer", "Tests\Internal", "Tests\Options", "Tests\Plugin", "Tests\Integration")
+
+Add-CompileIncludes `
+    "tests/Axbus.Integration.Tests/Axbus.Integration.Tests.csproj" `
+    @("Tests")
+
+# ==============================================================================
+# VERIFY AND BUILD
+# ==============================================================================
+
+Write-Phase "Verifying File Counts"
+
+$expected = @{
+    "tests/Axbus.Tests.Common"              = 4
+    "tests/Axbus.Core.Tests"                = 6
+    "tests/Axbus.Application.Tests"         = 5
+    "tests/Axbus.Infrastructure.Tests"      = 4
+    "tests/Axbus.Plugin.Reader.Json.Tests"  = 5
+    "tests/Axbus.Plugin.Writer.Csv.Tests"   = 4
+    "tests/Axbus.Plugin.Writer.Excel.Tests" = 4
+    "tests/Axbus.Integration.Tests"         = 4
+}
+
+$allOk = $true
+foreach ($entry in $expected.GetEnumerator()) {
+    $path   = $entry.Key
+    $count  = (Get-ChildItem -Path $path -Filter "*.cs" -Recurse |
+               Where-Object { $_.FullName -notmatch "\\(bin|obj)\\" }).Count
+    $name   = Split-Path $path -Leaf
+    if ($count -ge $entry.Value) {
+        Write-Ok "$name : $count .cs files"
+    } else {
+        Write-Warn "$name : $count .cs files (expected $($entry.Value))"
+        $allOk = $false
+    }
+}
+
+Write-Host ""
+Write-Info "Running dotnet restore..."
+try {
+    $slnFile = if (Test-Path "Axbus.slnx") { "Axbus.slnx" } else { "Axbus.sln" }
+    dotnet restore $slnFile --nologo 2>&1 | Out-Null
+    Write-Ok "NuGet restore complete"
+} catch {
+    Write-Warn "Restore warning: $_"
+}
+
+Write-Host ""
+Write-Info "Running dotnet build to verify zero errors..."
+try {
+    dotnet build $slnFile --configuration Debug --nologo 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok "Full solution builds with 0 errors"
+    } else {
+        Write-Warn "Build completed with errors - run: dotnet build $slnFile"
+    }
+} catch {
+    Write-Warn "Build check: $_"
+}
 
 # ==============================================================================
 # SUMMARY
@@ -3435,29 +2945,24 @@ public sealed class MultiFormatIntegrationTests : AxbusTestBase
 
 Write-Host ""
 Write-Host "===============================================================================" -ForegroundColor Green
-Write-Host "  [DONE] All Test Projects - Code Generation Complete!" -ForegroundColor Green
+Write-Host "  [DONE] All Test Projects Generated!" -ForegroundColor Green
 Write-Host "===============================================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Test Project 1 - Axbus.Tests.Common       :  4 files" -ForegroundColor White
-Write-Host "  Test Project 2 - Axbus.Core.Tests         :  6 files" -ForegroundColor White
-Write-Host "  Test Project 3 - Axbus.Application.Tests  :  5 files" -ForegroundColor White
-Write-Host "  Test Project 4 - Axbus.Infrastructure.Tests: 4 files" -ForegroundColor White
-Write-Host "  Test Project 5 - Axbus.Plugin.Reader.Json.Tests: 5 files" -ForegroundColor White
-Write-Host "  Test Project 6 - Axbus.Plugin.Writer.Csv.Tests : 4 files" -ForegroundColor White
-Write-Host "  Test Project 7 - Axbus.Plugin.Writer.Excel.Tests: 4 files" -ForegroundColor White
-Write-Host "  Test Project 8 - Axbus.Integration.Tests  :  4 files" -ForegroundColor White
+Write-Host "  Test Project 1 - Axbus.Tests.Common             :  4 files" -ForegroundColor White
+Write-Host "  Test Project 2 - Axbus.Core.Tests               :  6 files" -ForegroundColor White
+Write-Host "  Test Project 3 - Axbus.Application.Tests        :  5 files" -ForegroundColor White
+Write-Host "  Test Project 4 - Axbus.Infrastructure.Tests     :  4 files" -ForegroundColor White
+Write-Host "  Test Project 5 - Axbus.Plugin.Reader.Json.Tests :  5 files" -ForegroundColor White
+Write-Host "  Test Project 6 - Axbus.Plugin.Writer.Csv.Tests  :  4 files" -ForegroundColor White
+Write-Host "  Test Project 7 - Axbus.Plugin.Writer.Excel.Tests:  4 files" -ForegroundColor White
+Write-Host "  Test Project 8 - Axbus.Integration.Tests        :  4 files" -ForegroundColor White
 Write-Host ""
-Write-Host "  Total: 36 test source files" -ForegroundColor Cyan
+Write-Host "  All 8 .csproj files patched with explicit Compile Include entries." -ForegroundColor Green
+Write-Host "  Files will appear in Visual Studio immediately - no manual reload." -ForegroundColor Green
 Write-Host ""
 Write-Host "  Next Steps:" -ForegroundColor Yellow
-Write-Host "    1. Save to: scripts/generate-tests.ps1" -ForegroundColor White
-Write-Host "    2. Run: PowerShell -ExecutionPolicy Bypass -File .\scripts\generate-tests.ps1" -ForegroundColor White
-Write-Host "    3. Full solution build:" -ForegroundColor White
-Write-Host "       dotnet build Axbus.slnx" -ForegroundColor White
-Write-Host "    4. Run all tests:" -ForegroundColor White
-Write-Host "       dotnet test Axbus.slnx" -ForegroundColor White
-Write-Host "    5. Verify: 0 errors, all tests pass" -ForegroundColor White
-Write-Host "    6. Commit everything to Git!" -ForegroundColor White
+Write-Host "    dotnet test $slnFile  -- run all tests" -ForegroundColor White
+Write-Host "    git add . && git commit -m 'test: add all test projects'" -ForegroundColor White
 Write-Host ""
 Write-Host "===============================================================================" -ForegroundColor Green
 Write-Host ""

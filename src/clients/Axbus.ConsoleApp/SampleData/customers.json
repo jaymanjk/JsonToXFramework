@@ -1,0 +1,86 @@
+[
+  {
+    "customerId": 1001,
+    "name": "Acme Corporation",
+    "contact": {
+      "email": "info@acme.com",
+      "phone": "+1-555-0100"
+    },
+    "address": {
+      "street": "123 Business Ave",
+      "city": "New York",
+      "state": "NY",
+      "zipCode": "10001"
+    },
+    "orders": [
+      {
+        "orderId": "ORD-2024-001",
+        "orderDate": "2024-01-15",
+        "amount": 1250.50
+      },
+      {
+        "orderId": "ORD-2024-002",
+        "orderDate": "2024-02-20",
+        "amount": 3400.75
+      }
+    ],
+    "active": true,
+    "since": "2020-05-12"
+  },
+  {
+    "customerId": 1002,
+    "name": "TechStart Inc",
+    "contact": {
+      "email": "contact@techstart.io",
+      "phone": "+1-555-0200"
+    },
+    "address": {
+      "street": "456 Innovation Dr",
+      "city": "San Francisco",
+      "state": "CA",
+      "zipCode": "94102"
+    },
+    "orders": [
+      {
+        "orderId": "ORD-2024-003",
+        "orderDate": "2024-03-10",
+        "amount": 5600.25
+      }
+    ],
+    "active": true,
+    "since": "2022-08-30"
+  },
+  {
+    "customerId": 1003,
+    "name": "Global Solutions Ltd",
+    "contact": {
+      "email": "sales@globalsolutions.com",
+      "phone": "+1-555-0300"
+    },
+    "address": {
+      "street": "789 Enterprise Blvd",
+      "city": "Chicago",
+      "state": "IL",
+      "zipCode": "60601"
+    },
+    "orders": [
+      {
+        "orderId": "ORD-2024-004",
+        "orderDate": "2024-01-25",
+        "amount": 2100.00
+      },
+      {
+        "orderId": "ORD-2024-005",
+        "orderDate": "2024-02-15",
+        "amount": 4500.50
+      },
+      {
+        "orderId": "ORD-2024-006",
+        "orderDate": "2024-03-20",
+        "amount": 3200.75
+      }
+    ],
+    "active": false,
+    "since": "2019-03-15"
+  }
+]

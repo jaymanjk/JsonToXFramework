@@ -5,9 +5,11 @@
 namespace Axbus.Application.Factories;
 
 using Axbus.Application.Pipeline;
+using Axbus.Application.Plugin;
 using Axbus.Core.Abstractions.Conversion;
 using Axbus.Core.Abstractions.Factories;
 using Axbus.Core.Abstractions.Plugin;
+using Axbus.Core.Enums;
 using Axbus.Core.Exceptions;
 using Axbus.Core.Models.Configuration;
 using Microsoft.Extensions.Logging;
@@ -78,15 +80,49 @@ public sealed class PipelineFactory : IPipelineFactory
     {
         ArgumentNullException.ThrowIfNull(module);
 
-        // Resolve plugin - use explicit override if specified, otherwise auto-resolve
-        var plugin = !string.IsNullOrWhiteSpace(module.PluginOverride)
-            ? pluginRegistry.ResolveById(module.PluginOverride)
-            : pluginRegistry.Resolve(module.SourceFormat, module.TargetFormat);
+        IPlugin plugin;
 
-        logger.LogDebug(
-            "Creating pipeline for module '{ModuleName}' using plugin '{PluginId}'",
-            module.ConversionName,
-            plugin.PluginId);
+        if (!string.IsNullOrWhiteSpace(module.PluginOverride))
+        {
+            // Explicit override: use the single named plugin for all stages
+            plugin = pluginRegistry.ResolveById(module.PluginOverride);
+
+            logger.LogDebug(
+                "Creating pipeline for module '{ModuleName}' using override plugin '{PluginId}'",
+                module.ConversionName,
+                plugin.PluginId);
+        }
+        else
+        {
+            // Standard dual-plugin resolution: writer plugin supplies the format pair key;
+            // reader plugin is found by matching source format and Reader capability
+            var writerPlugin = pluginRegistry.Resolve(module.SourceFormat, module.TargetFormat);
+
+            var readerDescriptor = pluginRegistry.GetAll()
+                .FirstOrDefault(d =>
+                    string.Equals(
+                        d.Manifest.SourceFormat,
+                        module.SourceFormat,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    (d.Instance.Capabilities & PluginCapabilities.Reader) != 0);
+
+            if (readerDescriptor == null)
+            {
+                throw new AxbusPluginException(
+                    $"No reader plugin registered for source format '{module.SourceFormat}'. " +
+                    "Check PluginSettings.Plugins in appsettings.json.");
+            }
+
+            // Combine reader and writer into a single composite plugin so the
+            // existing ConversionPipeline (single-plugin model) works unchanged
+            plugin = new CompositePlugin(readerDescriptor.Instance, writerPlugin);
+
+            logger.LogDebug(
+                "Creating pipeline for module '{ModuleName}' | Reader: '{ReaderId}' | Writer: '{WriterId}'",
+                module.ConversionName,
+                readerDescriptor.Instance.PluginId,
+                writerPlugin.PluginId);
+        }
 
         // Build middleware chain for this module's pipeline options
         var middlewareList = middlewareFactory.Create();

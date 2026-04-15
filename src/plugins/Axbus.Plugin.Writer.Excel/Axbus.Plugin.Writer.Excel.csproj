@@ -1,7 +1,13 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\..\framework\Axbus.Core\Axbus.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Axbus.Plugin.Writer.Excel.manifest.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <ItemGroup>

@@ -121,22 +121,30 @@ internal sealed class ConversionHostedService : BackgroundService
     private readonly IHostApplicationLifetime lifetime;
 
     /// <summary>
+    /// The Axbus root settings containing module configurations.
+    /// </summary>
+    private readonly Axbus.Core.Models.Configuration.AxbusRootSettings settings;
+
+    /// <summary>
     /// Initializes a new instance of <see cref="ConversionHostedService"/>.
     /// </summary>
     /// <param name="logger">Logger for hosted service messages.</param>
     /// <param name="conversionRunner">The conversion runner to execute.</param>
     /// <param name="eventPublisher">The event publisher for lifecycle events.</param>
     /// <param name="lifetime">The host application lifetime.</param>
+    /// <param name="options">The Axbus root settings options.</param>
     public ConversionHostedService(
         ILogger<ConversionHostedService> logger,
         IConversionRunner conversionRunner,
         IEventPublisher eventPublisher,
-        IHostApplicationLifetime lifetime)
+        IHostApplicationLifetime lifetime,
+        Microsoft.Extensions.Options.IOptions<Axbus.Core.Models.Configuration.AxbusRootSettings> options)
     {
         this.logger = logger;
         this.conversionRunner = conversionRunner;
         this.eventPublisher = eventPublisher;
         this.lifetime = lifetime;
+        this.settings = options.Value;
     }
 
     /// <summary>
@@ -211,6 +219,87 @@ internal sealed class ConversionHostedService : BackgroundService
             subscription.Dispose();
             // Signal the host to stop after conversion completes
             lifetime.StopApplication();
+        }
+    }
+
+    /// <summary>
+    /// Validates that required folders exist and creates output folders if missing.
+    /// Logs warnings for missing input folders but allows execution to continue
+    /// (framework will handle file-not-found errors appropriately).
+    /// </summary>
+    private void ValidateAndCreateFolders()
+    {
+        try
+        {
+            if (settings?.ConversionModules == null)
+            {
+                logger.LogWarning("No conversion modules configured in appsettings.json");
+                return;
+            }
+
+            foreach (var module in settings.ConversionModules.Where(m => m.IsEnabled))
+            {
+                // Validate source path exists (warn if missing, but don't fail)
+                if (!string.IsNullOrEmpty(module.Source?.Path))
+                {
+                    var sourcePath = Path.GetFullPath(module.Source.Path);
+                    if (!Directory.Exists(sourcePath))
+                    {
+                        logger.LogWarning(
+                            "Source path does not exist for module {ModuleName}: {Path}. " +
+                            "Conversion will fail if files are not found.",
+                            module.ConversionName,
+                            sourcePath);
+                    }
+                    else
+                    {
+                        logger.LogDebug(
+                            "Source path validated for module {ModuleName}: {Path}",
+                            module.ConversionName,
+                            sourcePath);
+                    }
+                }
+
+                // Create target output folder if it doesn't exist
+                if (!string.IsNullOrEmpty(module.Target?.Path))
+                {
+                    var targetPath = Path.GetFullPath(module.Target.Path);
+                    if (!Directory.Exists(targetPath))
+                    {
+                        Directory.CreateDirectory(targetPath);
+                        logger.LogInformation(
+                            "Created output folder for module {ModuleName}: {Path}",
+                            module.ConversionName,
+                            targetPath);
+                    }
+                }
+
+                // Create error output folder if specified and doesn't exist
+                if (!string.IsNullOrEmpty(module.Target?.ErrorOutputPath))
+                {
+                    var errorPath = Path.GetFullPath(module.Target.ErrorOutputPath);
+                    if (!Directory.Exists(errorPath))
+                    {
+                        Directory.CreateDirectory(errorPath);
+                        logger.LogInformation(
+                            "Created error output folder for module {ModuleName}: {Path}",
+                            module.ConversionName,
+                            errorPath);
+                    }
+                }
+            }
+
+            // Create logs folder if it doesn't exist (for Serilog file output)
+            var logsPath = Path.GetFullPath("logs");
+            if (!Directory.Exists(logsPath))
+            {
+                Directory.CreateDirectory(logsPath);
+                logger.LogInformation("Created logs folder: {Path}", logsPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error validating or creating folders. Conversion may fail.");
         }
     }
 }
