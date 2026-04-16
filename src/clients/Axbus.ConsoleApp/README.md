@@ -132,7 +132,7 @@ Each module represents a conversion pipeline:
 | `Type` | Connector type | `"FileSystem"` |
 | `Path` | Input folder path (relative or absolute) | `".\\SampleData"` |
 | `FilePattern` | File matching pattern | `"*.json"` or `"customers.json"` |
-| `ReadMode` | Read mode | `"AllFiles"` or `"FirstFile"` |
+| `ReadMode` | Read mode | `"AllFiles"` or `"SingleFile"` |
 
 ### Target Options
 
@@ -268,17 +268,30 @@ Program.cs
        ├─> Configure Serilog
        ├─> Load appsettings.json
        ├─> Register Axbus Framework Services
-       │    ├─> AddAxbusApplication()
+       │    ├─> AddAxbusApplication()  ← also registers PluginRegistrationService
        │    └─> AddAxbusInfrastructure()
-       ├─> Register Plugins
+       ├─> Register Plugins (IPlugin singletons in DI)
        │    ├─> JsonReaderPlugin
        │    ├─> CsvWriterPlugin
        │    └─> ExcelWriterPlugin
        └─> AddHostedService<ConversionHostedService>()
-            └─> ConversionHostedService.ExecuteAsync()
-                 ├─> Subscribe to IEventPublisher
-                 ├─> Create Progress<ConversionProgress>
-                 └─> Call IConversionRunner.RunAsync()
+            └─> Host starts services in registration order:
+                 1. PluginRegistrationService.StartAsync()
+                 │   └─> Reads *.manifest.json for each IPlugin
+                 │   └─> Calls IPluginRegistry.Register() per plugin
+                 2. ConversionHostedService.ExecuteAsync()
+                      ├─> Subscribe to IEventPublisher
+                      ├─> Create Progress<ConversionProgress>
+                      └─> Call IConversionRunner.RunAsync()
+                           └─> For each module:
+                                ├─> IConnectorFactory → GetSourcePathsAsync()
+                                ├─> For each source file:
+                                │    └─> IConversionPipeline.ExecuteAsync(module, filePath)
+                                │         ├─> CompositePlugin.CreateReader()  [JsonReaderPlugin]
+                                │         ├─> CompositePlugin.CreateParser()  [JsonReaderPlugin]
+                                │         ├─> CompositePlugin.CreateTransformer() [JsonReaderPlugin]
+                                │         └─> CompositePlugin.CreateWriter()  [CsvWriterPlugin]
+                                └─> Aggregate results → ConversionSummary
 ```
 
 ### Dependency Injection
@@ -287,15 +300,20 @@ All services are registered in `AppBootstrapper.cs`:
 
 ```csharp
 // Framework layers
-services.AddAxbusApplication(configuration);
+services.AddAxbusApplication(configuration);  // ← also registers PluginRegistrationService
 services.AddAxbusInfrastructure(configuration);
 
-// Plugins (manual registration - framework controls lifecycle)
+// Plugins (manual registration — framework controls lifecycle)
+// PluginRegistrationService reads each plugin's .manifest.json at startup
+// and populates IPluginRegistry. For a json→csv module:
+//   - Reader stages (Read/Parse/Transform) resolved from JsonReaderPlugin
+//   - Writer stage (Write) resolved from CsvWriterPlugin
+//   These are combined into a CompositePlugin per pipeline execution.
 services.AddSingleton<IPlugin, JsonReaderPlugin>();
 services.AddSingleton<IPlugin, CsvWriterPlugin>();
 services.AddSingleton<IPlugin, ExcelWriterPlugin>();
 
-// Hosted service that runs conversions
+// Hosted service that runs conversions (starts after PluginRegistrationService)
 services.AddHostedService<ConversionHostedService>();
 ```
 
@@ -315,13 +333,38 @@ services.AddHostedService<ConversionHostedService>();
 - All JSON files: `"*.json"`
 - Specific file: `"customers.json"`
 
-### Issue: "Permission denied writing to output folder"
+### Issue: "Permission denied reading file"
 
-**Solution:** Ensure the output folder is writable, or run with elevated permissions.
+**Cause:** `Source.Path` points to a folder (e.g. `.\SampleData`), not a file.
+
+**Solution:** This is handled automatically. Set `Source.Path` to the **folder** containing
+your JSON files and set `Source.FilePattern` to the specific filename:
+```json
+"Source": {
+  "Path": ".\\SampleData",
+  "FilePattern": "customers.json",
+  "ReadMode": "AllFiles"
+}
+```
+The framework enumerates matching files via `GetSourcePathsAsync()` and processes each
+one individually through the pipeline.
+
+### Issue: "No plugin registered for format pair 'json:csv'"
+
+**Cause:** Plugin manifest `.json` files are not in the build output directory.
+
+**Solution:** Ensure each plugin's `.csproj` has a `<Content>` entry for the manifest:
+```xml
+<Content Include="Axbus.Plugin.Reader.Json.manifest.json">
+  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+</Content>
+```
+The manifest files for all three bundled plugins are already configured.
 
 ### Issue: "Plugin not found"
 
-**Solution:** Verify all plugin projects are referenced in `Axbus.ConsoleApp.csproj` and built successfully.
+**Solution:** Verify all plugin projects are referenced in `Axbus.ConsoleApp.csproj`
+and that their `*.manifest.json` files are present in the build output directory.
 
 ---
 

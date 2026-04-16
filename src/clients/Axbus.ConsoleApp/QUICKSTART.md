@@ -65,8 +65,20 @@ dotnet run --no-build
 ### "No files found"
 Check that `SampleData` folder exists with the 3 JSON files.
 
-### "Permission denied"
-Run with administrator/sudo if needed.
+### "Permission denied" or "Access denied reading file"
+Set `Source.Path` to the **folder**, not a specific file, and use `FilePattern` to select files:
+```json
+"Source": {
+  "Path": ".\\SampleData",
+  "FilePattern": "customers.json",
+  "ReadMode": "AllFiles"
+}
+```
+The framework enumerates each matching file and runs a separate pipeline pass per file.
+
+### "No plugin registered for format pair"
+Ensure the build output contains `*.manifest.json` files alongside each plugin DLL.
+Run a clean build (`dotnet clean && dotnet build`) to trigger a fresh copy.
 
 ---
 

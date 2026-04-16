@@ -91,6 +91,29 @@ dotnet add package Axbus.Plugin.Writer.Csv
 }
 ```
 
+### Register Plugins
+```csharp
+// 1. Register each plugin as IPlugin in DI — framework controls lifecycle
+services.AddSingleton<IPlugin, JsonReaderPlugin>();
+services.AddSingleton<IPlugin, CsvWriterPlugin>();
+services.AddSingleton<IPlugin, ExcelWriterPlugin>();
+
+// 2. AddAxbusApplication() automatically registers PluginRegistrationService,
+//    which reads each plugin's .manifest.json at startup and populates
+//    IPluginRegistry before the first pipeline is created.
+services.AddAxbusApplication(configuration);
+services.AddAxbusInfrastructure(configuration);
+```
+
+> **Note:** Each plugin assembly must ship with a companion `{AssemblyName}.manifest.json`
+> file in the same directory. Add `<Content>` entries to your plugin `.csproj` files so
+> the manifests are copied to the build output:
+> ```xml
+> <Content Include="Axbus.Plugin.Reader.Json.manifest.json">
+>   <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+> </Content>
+> ```
+
 ## Writing a Custom Plugin
 
 See [docs/guides/plugin-development.md](docs/guides/plugin-development.md).
